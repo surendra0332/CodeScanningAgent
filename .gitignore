@@ -30,10 +30,10 @@ wheels/
 .env.local
 .env.production
 
-# Database
-*.db
-*.sqlite3
-scans.db
+# Database (keep scans.db for functionality)
+# *.db
+# *.sqlite3
+# scans.db
 
 # Logs
 *.log
