@@ -88,8 +88,14 @@ class CodeScanner:
                         # Add minimal code suggestion
                         issue_data['minimal_fix'] = self._generate_minimal_fix(issue_data)
                         issues.append(issue_data)
-                    print(f"Bandit found {len(issues)} security issues")
-                    return issues[:10]  # Limit results
+                    
+                    # Only use Bandit results if it found actual issues
+                    if issues:
+                        print(f"Bandit found {len(issues)} security issues")
+                        return issues[:10]  # Limit results
+                    else:
+                        print(f"Bandit found 0 security issues, falling back to manual analysis")
+                        break  # Exit loop and fall through to manual analysis
             except Exception as e:
                 continue
         

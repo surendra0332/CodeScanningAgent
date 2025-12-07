@@ -4,13 +4,61 @@ class CodeScannerApp {
         this.currentJobId = null;
         this.statusInterval = null;
         this.deleteMode = false;
+        this.currentTheme = 'dark'; // Default theme
         this.init();
     }
 
     init() {
+        this.initTheme();
         this.bindEvents();
         this.initNavigation();
         this.loadAllScans();
+    }
+
+    initTheme() {
+        // Load saved theme from localStorage or default to dark
+        const savedTheme = localStorage.getItem('theme') || 'dark';
+        this.currentTheme = savedTheme;
+
+        const themeIcon = document.querySelector('.theme-icon');
+        if (!themeIcon) {
+            console.error('Theme icon element not found');
+            return;
+        }
+
+        // Apply theme to body
+        if (savedTheme === 'light') {
+            document.body.classList.add('light-theme');
+            themeIcon.textContent = '☀️';
+        } else {
+            document.body.classList.remove('light-theme');
+            themeIcon.textContent = '🌙';
+        }
+
+        console.log('Theme initialized:', this.currentTheme);
+    }
+
+    toggleTheme() {
+        const themeIcon = document.querySelector('.theme-icon');
+        if (!themeIcon) {
+            console.error('Theme icon element not found');
+            return;
+        }
+
+        // Toggle between dark and light
+        if (this.currentTheme === 'dark') {
+            this.currentTheme = 'light';
+            document.body.classList.add('light-theme');
+            themeIcon.textContent = '☀️';
+        } else {
+            this.currentTheme = 'dark';
+            document.body.classList.remove('light-theme');
+            themeIcon.textContent = '🌙';
+        }
+
+        // Save to localStorage
+        localStorage.setItem('theme', this.currentTheme);
+        console.log('Theme changed to:', this.currentTheme);
     }
 
     initNavigation() {
@@ -20,7 +68,7 @@ class CodeScannerApp {
                 e.preventDefault();
                 const section = item.dataset.section;
                 this.switchSection(section);
-                
+
                 // Update active nav item
                 document.querySelectorAll('.nav-item').forEach(nav => nav.classList.remove('active'));
                 item.classList.add('active');
@@ -31,8 +79,8 @@ class CodeScannerApp {
     switchSection(section) {
         // Hide all sections first
         document.querySelectorAll('section').forEach(sec => sec.style.display = 'none');
-        
-        switch(section) {
+
+        switch (section) {
             case 'scan':
                 document.querySelector('.scan-section').style.display = 'block';
                 break;
@@ -58,7 +106,7 @@ class CodeScannerApp {
         // Remove existing no-results section
         const existing = document.querySelector('.no-results-section');
         if (existing) existing.remove();
-        
+
         const noResultsHtml = `
             <section class="no-results-section" style="display: block;">
                 <h2>Scan Results</h2>
@@ -69,7 +117,7 @@ class CodeScannerApp {
                 </div>
             </section>
         `;
-        
+
         document.querySelector('.content-area').insertAdjacentHTML('beforeend', noResultsHtml);
     }
 
@@ -93,11 +141,11 @@ class CodeScannerApp {
                 </div>
             </section>
         `;
-        
+
         // Remove existing settings section if any
         const existing = document.querySelector('.settings-section');
         if (existing) existing.remove();
-        
+
         // Add new settings section
         document.querySelector('.content-area').insertAdjacentHTML('beforeend', settingsHtml);
     }
@@ -105,7 +153,7 @@ class CodeScannerApp {
     async clearAllData() {
         const confirmed = confirm('Are you sure you want to clear all scan data? This cannot be undone.');
         if (!confirmed) return;
-        
+
         try {
             // This would need a backend endpoint to clear all data
             this.showSuccess('All data cleared successfully!');
@@ -116,14 +164,19 @@ class CodeScannerApp {
     }
 
     bindEvents() {
+        // Theme toggle button
+        document.getElementById('themeToggle').addEventListener('click', () => {
+            this.toggleTheme();
+        });
+
         document.getElementById('scanForm').addEventListener('submit', (e) => this.handleScanSubmit(e));
-        
+
         const refreshBtn = document.getElementById('refreshScansBtn');
         refreshBtn.addEventListener('click', () => {
             console.log('Refresh button clicked');
             refreshBtn.disabled = true;
             refreshBtn.textContent = 'Refreshing...';
-            
+
             this.loadAllScans().finally(() => {
                 refreshBtn.disabled = false;
                 refreshBtn.textContent = 'Refresh';
@@ -200,28 +253,28 @@ class CodeScannerApp {
 
     async handleScanSubmit(e) {
         e.preventDefault();
-        
+
         const repoUrl = document.getElementById('repoUrl').value.trim();
         const unitTestFile = document.getElementById('unitTestReport').files[0];
-        
+
         // Basic validation
         if (!repoUrl) {
             this.showError('Repository URL is required');
             return;
         }
-        
+
         // Unit test report is now mandatory
         if (!unitTestFile) {
             this.showError('Unit test report is required. Please upload a JSON file containing test results for this repository.');
             return;
         }
-        
+
         // Validate file format
         if (!unitTestFile.name.endsWith('.json')) {
             this.showError('Unit test report must be a JSON file (.json)');
             return;
         }
-        
+
         const formData = new FormData();
         formData.append('repo_url', repoUrl);
         if (unitTestFile) {
@@ -234,7 +287,7 @@ class CodeScannerApp {
                 repo_url: repoUrl,
                 has_unit_test: !!unitTestFile
             });
-            
+
             const response = await fetch(`${this.baseUrl}/scan`, {
                 method: 'POST',
                 body: formData
@@ -242,7 +295,7 @@ class CodeScannerApp {
 
             if (!response.ok) {
                 let errorMessage = `HTTP error! status: ${response.status}`;
-                
+
                 try {
                     const errorData = await response.json();
                     errorMessage = errorData.detail || errorMessage;
@@ -250,21 +303,21 @@ class CodeScannerApp {
                     const errorText = await response.text();
                     console.error('Error response:', errorText);
                 }
-                
+
                 throw new Error(errorMessage);
             }
 
             const result = await response.json();
             console.log('Scan started successfully:', result);
             this.currentJobId = result.job_id;
-            
+
             this.showSuccess(`Scan started successfully! Job ID: ${result.job_id}`);
             this.showStatusSection();
             this.startStatusPolling();
-            
+
             // Reset form
             document.getElementById('scanForm').reset();
-            
+
         } catch (error) {
             console.error('Scan submission error:', error);
             this.showError(`Failed to start scan: ${error.message}`);
@@ -395,7 +448,7 @@ class CodeScannerApp {
 
         // Show results section
         resultsSection.style.display = 'block';
-        
+
         // Switch to results tab and update navigation
         this.switchSection('results');
         this.setActiveNav('results');
@@ -422,10 +475,10 @@ class CodeScannerApp {
                 </div>
             `;
         }
-        
+
         // Count minimal fixes
         const minimalFixes = report.issues ? report.issues.filter(issue => issue.minimal_fix).length : 0;
-        
+
         resultsSummary.innerHTML = reportHeader + `
             <div class="summary-cards">
                 <div class="summary-card">
@@ -450,14 +503,14 @@ class CodeScannerApp {
 
         // Display issues and unit test details
         let issuesHTML = '';
-        
+
         if (report.issues && report.issues.length > 0) {
             console.log('Displaying issues:', report.issues);
             issuesHTML = '<h3>Code Issues</h3>' + report.issues.map(issue => this.createIssueHTML(issue)).join('');
         } else {
             issuesHTML = '<p class="success">No code issues found! Your code looks great.</p>';
         }
-        
+
         // Add unit test details if available
         if (report.unit_test_report && report.unit_test_report.test_details) {
             const failedTests = report.unit_test_report.test_details.filter(test => test.status === 'FAILED');
@@ -474,7 +527,7 @@ class CodeScannerApp {
                 `).join('');
             }
         }
-        
+
         issuesContainer.innerHTML = issuesHTML;
 
         // Remove any existing messages
@@ -492,7 +545,7 @@ class CodeScannerApp {
                 <div class="fix-code"><code>${issue.minimal_fix.minimal_code}</code></div>
             </div>
         ` : '';
-        
+
         return `
             <div class="issue-item ${issue.type}">
                 <div class="issue-header">
@@ -519,14 +572,14 @@ class CodeScannerApp {
 
         } catch (error) {
             console.error('Error loading scans:', error);
-            document.getElementById('scansList').innerHTML = 
+            document.getElementById('scansList').innerHTML =
                 '<div class="error">Failed to load scans. Please check if the backend server is running.</div>';
         }
     }
 
     displayAllScans(scans) {
         const scansList = document.getElementById('scansList');
-        
+
         if (!scans || scans.length === 0) {
             scansList.innerHTML = '<p>No scans found. Start your first scan above!</p>';
             this.updateBulkDeleteUI();
@@ -539,15 +592,15 @@ class CodeScannerApp {
         scansList.innerHTML = sortedScans.map(scan => {
             const isCompleted = scan.status === 'completed';
             const issuesText = scan.total_issues !== undefined ? `<p>Issues: ${scan.total_issues}</p>` : '';
-            
-            const checkboxHtml = this.deleteMode ? 
+
+            const checkboxHtml = this.deleteMode ?
                 `<div class="scan-checkbox">
                     <input type="checkbox" class="scan-select" data-job-id="${scan.job_id}" onchange="window.app.updateBulkDeleteUI()">
                 </div>` : '';
-            
-            const deleteButtonHtml = this.deleteMode ? '' : 
+
+            const deleteButtonHtml = this.deleteMode ? '' :
                 `<button onclick="window.app.deleteScan('${scan.job_id}')" class="btn-delete">Delete</button>`;
-            
+
             return `
                 <div class="scan-item">
                     ${checkboxHtml}
@@ -557,28 +610,28 @@ class CodeScannerApp {
                         <p>Status: <span class="status-badge ${scan.status}">${scan.status}</span></p>
                         <p>Created: ${new Date(scan.created_at).toLocaleString()}</p>
                         ${issuesText}
-                        ${scan.unit_test_summary && scan.unit_test_summary.total_tests !== 'N/A' ? 
-                            `<p>Tests: ${scan.unit_test_summary.passed}/${scan.unit_test_summary.total_tests} passed</p>` : 
-                            ''}
+                        ${scan.unit_test_summary && scan.unit_test_summary.total_tests !== 'N/A' ?
+                    `<p>Tests: ${scan.unit_test_summary.passed}/${scan.unit_test_summary.total_tests} passed</p>` :
+                    ''}
                     </div>
                     <div class="scan-actions">
                         <button onclick="window.app.viewScanStatus('${scan.job_id}')" class="btn-secondary">View Status</button>
-                        ${isCompleted ? 
-                            `<button onclick="window.app.viewScanReport('${scan.job_id}')">View Report</button>` : 
-                            ''}
+                        ${isCompleted ?
+                    `<button onclick="window.app.viewScanReport('${scan.job_id}')">View Report</button>` :
+                    ''}
                         ${deleteButtonHtml}
                     </div>
                 </div>
             `;
         }).join('');
-        
+
         this.updateBulkDeleteUI();
     }
 
     async viewScanStatus(jobId) {
         this.currentJobId = jobId;
         this.showStatusSection();
-        
+
         try {
             const response = await fetch(`${this.baseUrl}/scan/${jobId}`);
             if (!response.ok) {
@@ -600,7 +653,7 @@ class CodeScannerApp {
     async viewScanReport(jobId) {
         console.log(`Viewing report options for job: ${jobId}`);
         this.currentJobId = jobId;
-        
+
         // Show report type selection modal
         this.showReportModal();
     }
@@ -615,11 +668,11 @@ class CodeScannerApp {
 
     async showScanResults() {
         if (!this.currentJobId) return;
-        
+
         try {
             this.showLoading('Loading scan report...');
             const response = await fetch(`${this.baseUrl}/scan/${this.currentJobId}/report`);
-            
+
             if (!response.ok) {
                 const errorText = await response.text();
                 throw new Error(`HTTP ${response.status}: ${errorText}`);
@@ -656,17 +709,17 @@ class CodeScannerApp {
         try {
             // Create direct download link
             const downloadUrl = `${this.baseUrl}/download/${this.currentJobId}/${format}`;
-            
+
             // Create hidden link and click it
             const link = document.createElement('a');
             link.href = downloadUrl;
             link.download = `report_${this.currentJobId.substring(0, 8)}.${format === 'pdf' ? 'txt' : format}`;
             link.style.display = 'none';
-            
+
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
-            
+
             this.showSuccess(`${format.toUpperCase()} download started!`);
 
         } catch (error) {
@@ -683,28 +736,28 @@ class CodeScannerApp {
 
         try {
             this.showLoading(`Downloading ${format.toUpperCase()} report...`);
-            
+
             // Use clean download URLs
             const response = await fetch(`${this.baseUrl}/download/${this.currentJobId}/${format}`);
-            
+
             if (!response.ok) {
                 throw new Error(`Download failed: ${response.status}`);
             }
 
             const blob = await response.blob();
             const url = window.URL.createObjectURL(blob);
-            
+
             const a = document.createElement('a');
             a.style.display = 'none';
             a.href = url;
             a.download = `report_${this.currentJobId.substring(0, 8)}.${format === 'pdf' ? 'txt' : format}`;
-            
+
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
-            
+
             window.URL.revokeObjectURL(url);
-            
+
             this.showSuccess(`${format.toUpperCase()} report downloaded successfully!`);
 
         } catch (error) {
@@ -739,16 +792,16 @@ class CodeScannerApp {
     toggleSelectAll() {
         const checkboxes = document.querySelectorAll('.scan-select');
         const selectAllBtn = document.getElementById('selectAllBtn');
-        
+
         if (checkboxes.length === 0) return;
-        
+
         const allChecked = Array.from(checkboxes).every(cb => cb.checked);
         const newState = !allChecked;
-        
+
         checkboxes.forEach(cb => {
             cb.checked = newState;
         });
-        
+
         this.updateBulkDeleteUI();
     }
 
@@ -757,7 +810,7 @@ class CodeScannerApp {
         const selectedCount = Array.from(checkboxes).filter(cb => cb.checked).length;
         const deleteSelectedBtn = document.getElementById('deleteSelectedBtn');
         const selectAllBtn = document.getElementById('selectAllBtn');
-        
+
         // Update delete button
         if (selectedCount > 0) {
             deleteSelectedBtn.style.display = 'inline-block';
@@ -765,7 +818,7 @@ class CodeScannerApp {
         } else {
             deleteSelectedBtn.style.display = 'none';
         }
-        
+
         // Update select all button text
         if (checkboxes.length === 0) {
             selectAllBtn.textContent = 'Select All';
@@ -777,16 +830,16 @@ class CodeScannerApp {
 
     toggleDeleteMode(enable) {
         this.deleteMode = enable;
-        
+
         // Show/hide buttons
         document.getElementById('deleteModeBtn').style.display = enable ? 'none' : 'inline-block';
         document.getElementById('selectAllBtn').style.display = enable ? 'inline-block' : 'none';
         document.getElementById('cancelDeleteBtn').style.display = enable ? 'inline-block' : 'none';
-        
+
         if (!enable) {
             document.getElementById('deleteSelectedBtn').style.display = 'none';
         }
-        
+
         // Refresh the scan list to show/hide checkboxes
         this.loadAllScans();
     }
@@ -794,34 +847,34 @@ class CodeScannerApp {
     async deleteSelectedScans() {
         const selectedCheckboxes = document.querySelectorAll('.scan-select:checked');
         const selectedJobIds = Array.from(selectedCheckboxes).map(cb => cb.dataset.jobId);
-        
+
         if (selectedJobIds.length === 0) {
             this.showError('No scans selected for deletion');
             return;
         }
-        
+
         const confirmed = confirm(`Are you sure you want to delete ${selectedJobIds.length} scan report(s)? This action cannot be undone.`);
         if (!confirmed) return;
 
         try {
             this.showLoading(`Deleting ${selectedJobIds.length} scans...`);
-            
+
             // Delete scans in parallel
-            const deletePromises = selectedJobIds.map(jobId => 
+            const deletePromises = selectedJobIds.map(jobId =>
                 fetch(`${this.baseUrl}/scan/${jobId}`, { method: 'DELETE' })
             );
-            
+
             const results = await Promise.allSettled(deletePromises);
-            
+
             const successful = results.filter(r => r.status === 'fulfilled' && r.value.ok).length;
             const failed = results.length - successful;
-            
+
             if (failed === 0) {
                 this.showSuccess(`Successfully deleted ${successful} scan(s)!`);
             } else {
                 this.showError(`Deleted ${successful} scan(s), but ${failed} failed to delete.`);
             }
-            
+
             // Exit delete mode and refresh
             this.toggleDeleteMode(false);
 

@@ -11,51 +11,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-ULTIMATE_NEVER_FAIL_PROMPT = """
-You are a Senior Security Engineer at GitHub. Your job is to VALIDATE, never to block legitimate submissions.
-
-CRITICAL RULES - OBEY OR DIE:
-1. GitHub ALWAYS clones repos with random suffix (e.g., MyApp → MyApp-abc1234). This is NORMAL. NEVER flag as mismatch.
-2. Repository name mismatch is EXPECTED and SAFE. Confidence must NOT drop because of folder name.
-3. Only lower confidence if:
-   - All tests green + coverage < 85%
-   - Coverage % tampering (80.36% vs real 80%)
-   - Filename has space + á (like "Interface Grafica")
-   - Zero failed tests + suspiciously perfect scores
-4. If ANY test failed → confidence +30% (real project!)
-5. Never reject for folder name differences.
-
-Input:
-- GitHub URL: {repo_url}
-- Cloned temp folder name: {temp_folder_name}
-- Test report JSON: {test_report}
-- Code files: {file_list}
-
-Output ONLY this JSON (no markdown, no explanation):
-
-{{
-  "verdict": "APPROVED" | "NEEDS_FIXES" | "REJECTED",
-  "confidence_score": 85,
-  "summary": "Short honest verdict",
-  "validation_passed": true,
-  "issues": {{
-    "name_mismatch": false,
-    "coverage_tampering": true|false,
-    "fake_green_tests": true|false,
-    "dangerous_filenames": true|false
-  }},
-  "security_issues": [...],
-  "quality_issues": [...],
-  "test_summary": {{
-    "failed_tests": 0,
-    "coverage_percent": 80.0,
-    "looks_legitimate": true
-  }}
-}}
-
-NOW ANALYZE AND APPROVE THIS SCAN.
-"""
-
 class IntelligentValidator:
     def __init__(self):
         self.groq_api_key = os.getenv('GROQ_API_KEY')

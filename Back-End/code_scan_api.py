@@ -11,6 +11,7 @@ from database import ScanDatabase
 from intelligent_validator import IntelligentValidator
 from report_generator import generate_report_for_scan
 from repo_validator import RepoValidator
+from unit_test_validator import UnitTestReportValidator
 import os
 import json
 
@@ -40,12 +41,29 @@ scan_jobs = {}
 
 
 
-def validate_unit_test_report(repo_url, unit_test_data):
-    """Simple validation - always accept valid JSON"""
+# Initialize unit test validator
+unit_test_validator = UnitTestReportValidator()
+
+def validate_unit_test_report(repo_url, unit_test_data, cloned_repo_path=None):
+    """Validate that unit test report matches the repository"""
     if not unit_test_data:
         return "Unit test report is required. Please upload a JSON file containing test results for this repository."
     
-    print(f"✅ VALIDATION SUCCESS: Unit test report accepted")
+    # Validate JSON structure
+    is_valid_structure, structure_error = unit_test_validator.validate_json_structure(unit_test_data)
+    if not is_valid_structure:
+        return structure_error
+    
+    # Validate repository match
+    is_valid, error_message = unit_test_validator.validate_repository_match(
+        repo_url, 
+        unit_test_data, 
+        cloned_repo_path
+    )
+    
+    if not is_valid:
+        return error_message
+    
     return None
 
 
@@ -71,6 +89,35 @@ def run_scan(job_id, repo_url):
             print(f"Failed to clone repository for job {job_id}")
             return
         print(f"Repository cloned successfully for job {job_id}")
+        
+        # Post-clone validation: Verify unit test report matches the cloned repository
+        print(f"Performing post-clone validation for job {job_id}")
+        repo_path = scanner.temp_dir if hasattr(scanner, 'temp_dir') else None
+        
+        if repo_path and scan_jobs[job_id].get('unit_test_report'):
+            validation_error = validate_unit_test_report(
+                repo_url, 
+                scan_jobs[job_id]['unit_test_report'],
+                repo_path
+            )
+
+            
+            if validation_error:
+                scan_jobs[job_id]['status'] = 'failed'
+                scan_jobs[job_id]['error'] = f'Validation failed: {validation_error}'
+                scan_jobs[job_id]['updated_at'] = datetime.now().isoformat()
+                print(f"❌ Post-clone validation failed for job {job_id}: {validation_error}")
+                
+                # Save failed validation to database
+                try:
+                    db.save_scan(scan_jobs[job_id])
+                except Exception as db_error:
+                    print(f"Database save error for failed validation {job_id}: {db_error}")
+                
+                return
+        
+        print(f"✅ Post-clone validation successful for job {job_id}")
+
         
         # Run scans
         print(f"Running security scan for job {job_id}")
@@ -357,6 +404,31 @@ def health_check():
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
         'active_scans': len([j for j in scan_jobs.values() if j['status'] == 'running'])
+    }
+
+@app.delete('/api/scan/{job_id}')
+def delete_scan(job_id: str):
+    """Delete a scan by job ID"""
+    job_id = job_id.strip()
+    
+    # Check if scan exists in memory or database
+    job = scan_jobs.get(job_id) or db.get_scan(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail='Job not found')
+    
+    # Remove from in-memory storage if present
+    if job_id in scan_jobs:
+        del scan_jobs[job_id]
+    
+    # Delete from database
+    success = db.delete_scan(job_id)
+    
+    if not success:
+        raise HTTPException(status_code=500, detail='Failed to delete scan from database')
+    
+    return {
+        'success': True,
+        'message': f'Scan {job_id} deleted successfully'
     }
 
 # WORKING DOWNLOAD ENDPOINTS
