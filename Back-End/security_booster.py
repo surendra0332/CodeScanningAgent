@@ -6,113 +6,29 @@ import re
 import os
 
 class SecurityBooster:
-    def __init__(self):
-        self.common_security_indicators = [
-            # File content patterns that indicate security risks
-            ('password', 'Potential password reference found'),
-            ('secret', 'Potential secret reference found'),
-            ('key', 'Potential key reference found'),
-            ('token', 'Potential token reference found'),
-            ('admin', 'Administrative access pattern found'),
-            ('auth', 'Authentication pattern found'),
-            ('login', 'Login functionality detected'),
-            ('session', 'Session management found'),
-            ('cookie', 'Cookie usage detected'),
-            ('hash', 'Hashing operation found'),
-            ('encrypt', 'Encryption operation found'),
-            ('decrypt', 'Decryption operation found'),
-            ('sql', 'SQL operation detected'),
-            ('query', 'Database query found'),
-            ('execute', 'Code execution pattern found'),
-            ('system', 'System call detected'),
-            ('shell', 'Shell command found'),
-            ('cmd', 'Command execution found'),
-            ('input', 'User input handling found'),
-            ('request', 'HTTP request handling found'),
-            ('response', 'HTTP response handling found'),
-            ('url', 'URL handling found'),
-            ('http', 'HTTP protocol usage found'),
-            ('https', 'HTTPS protocol usage found'),
-            ('ssl', 'SSL/TLS usage found'),
-            ('tls', 'TLS usage found'),
-            ('cert', 'Certificate handling found'),
-            ('verify', 'Verification process found'),
-            ('validate', 'Validation process found'),
-            ('sanitize', 'Sanitization process found'),
-            ('escape', 'Escaping process found'),
-            ('filter', 'Filtering process found'),
-            ('clean', 'Cleaning process found')
-        ]
-    
-    def boost_security_issues(self, existing_issues, file_contents):
-        """Always add security issues to guarantee detection"""
+    def _strip_comments(self, line, file_extension='.py'):
+        """Strip comments from a line of code based on file extension"""
+        # Handle non-breaking spaces
+        line = line.replace('\u00A0', ' ').replace('\t', ' ')
+        line = line.strip()
         
-        # Always boost security issues regardless of count
-        
-        boosted_issues = existing_issues.copy()
-        
-        # Analyze file contents for security indicators
-        for file_path, content in file_contents.items():
-            if not content:
-                continue
-                
-            lines = content.split('\n')
+        if not line:
+            return ""
             
-            for line_num, line in enumerate(lines, 1):
-                line_lower = line.lower().strip()
-                
-                # Skip empty lines and comments
-                if not line_lower or line_lower.startswith(('#', '//', '/*')):
-                    continue
-                
-                # Check for security indicators
-                for indicator, message in self.common_security_indicators:
-                    if indicator in line_lower and len(line_lower) > 10:
-                        
-                        # Create issue key to avoid duplicates
-                        issue_key = f"{file_path}:{line_num}:{indicator}"
-                        
-                        # Check if similar issue already exists
-                        if not any(issue.get('file') == file_path and 
-                                 issue.get('line') == line_num and 
-                                 indicator in issue.get('issue', '').lower() 
-                                 for issue in boosted_issues):
-                            
-                            # Determine severity based on indicator
-                            severity = self._get_severity_for_indicator(indicator, line_lower)
-                            
-                            boosted_issues.append({
-                                'file': file_path,
-                                'line': line_num,
-                                'severity': severity,
-                                'issue': f'{message} - requires security review',
-                                'type': 'security'
-                            })
-                            
-                            # Stop if we have enough issues
-                            if len(boosted_issues) >= 10:
-                                return boosted_issues
-        
-        return boosted_issues
-    
-    def _get_severity_for_indicator(self, indicator, line_content):
-        """Determine severity based on security indicator and context"""
-        
-        # Critical indicators
-        if indicator in ['password', 'secret', 'key', 'token'] and '=' in line_content:
-            return 'CRITICAL'
-        
-        # High risk indicators
-        if indicator in ['admin', 'execute', 'system', 'shell', 'cmd', 'sql']:
-            return 'HIGH'
-        
-        # Medium risk indicators
-        if indicator in ['auth', 'login', 'session', 'cookie', 'input', 'request']:
-            return 'MEDIUM'
-        
-        # Default to low
-        return 'LOW'
-    
+        # Python, Ruby, Shell
+        if file_extension in ['.py', '.rb', '.sh']:
+            if '#' in line:
+                parts = line.split('#')
+                return parts[0].strip()
+            return line
+            
+        # JS, Java, C#, Go, PHP, C, C++
+        elif file_extension in ['.js', '.java', '.cs', '.go', '.php', '.c', '.cpp', '.ts']:
+            if '//' in line:
+                return line.split('//')[0].strip()
+            return line
+            
+        return line
     def analyze_file_for_security_patterns(self, file_path, content):
         """Analyze individual file for security patterns"""
         
@@ -125,7 +41,6 @@ class SecurityBooster:
         
         # Advanced security pattern detection
         advanced_patterns = [
-            (r'=\s*["\'][^"\']{15,}["\']', 'Long string assignment - potential credential', 'MEDIUM'),
             (r'\.execute\s*\(', 'Database execution detected', 'MEDIUM'),
             (r'\.system\s*\(', 'System command execution', 'HIGH'),
             (r'input\s*\(', 'User input collection', 'MEDIUM'),
@@ -142,14 +57,60 @@ class SecurityBooster:
             (r'\.connect\s*\(', 'Network/Database connection', 'MEDIUM')
         ]
         
+        in_multiline_comment = False
+        multiline_marker = None
+        
         for line_num, line in enumerate(lines, 1):
             line_content = line.strip()
+            file_ext = os.path.splitext(file_path)[1]
+            
+            # Handle multi-line comments
+            if file_ext in ['.py', '.rb']:
+                if '"""' in line_content:
+                    if not in_multiline_comment:
+                        in_multiline_comment = True
+                        multiline_marker = '"""'
+                        if line_content.count('"""') > 1:
+                            in_multiline_comment = False
+                            multiline_marker = None
+                    elif multiline_marker == '"""':
+                        in_multiline_comment = False
+                        multiline_marker = None
+                elif "'''" in line_content:
+                    if not in_multiline_comment:
+                        in_multiline_comment = True
+                        multiline_marker = "'''"
+                        if line_content.count("'''") > 1:
+                            in_multiline_comment = False
+                            multiline_marker = None
+                    elif multiline_marker == "'''":
+                        in_multiline_comment = False
+                        multiline_marker = None
+            elif file_ext in ['.js', '.java', '.c', '.cpp', '.cs', '.php', '.go', '.ts']:
+                if '/*' in line_content:
+                    if not in_multiline_comment:
+                        in_multiline_comment = True
+                        if '*/' in line_content:
+                            in_multiline_comment = False
+                elif '*/' in line_content:
+                    if in_multiline_comment:
+                        in_multiline_comment = False
+                        
+            if in_multiline_comment:
+                continue
             
             if not line_content or line_content.startswith(('#', '//', '/*')):
                 continue
+                
+            # Strip inline comments for analysis
+            file_ext = os.path.splitext(file_path)[1]
+            clean_line = self._strip_comments(line_content, file_ext)
             
+            if not clean_line:
+                continue
+                
             for pattern, message, severity in advanced_patterns:
-                if re.search(pattern, line_content, re.IGNORECASE):
+                if re.search(pattern, clean_line, re.IGNORECASE):
                     security_issues.append({
                         'file': file_path,
                         'line': line_num,
@@ -183,8 +144,8 @@ def boost_security_detection(existing_issues, temp_dir):
                     except Exception:
                         continue
     
-    # Boost security issues
-    boosted_issues = booster.boost_security_issues(existing_issues, file_contents)
+    # Start with existing issues
+    boosted_issues = existing_issues.copy()
     
     # Add advanced pattern detection
     for file_path, content in file_contents.items():
@@ -192,8 +153,7 @@ def boost_security_detection(existing_issues, temp_dir):
         
         # Add unique advanced issues
         for issue in advanced_issues:
-            issue_key = f"{issue['file']}:{issue['line']}:{issue['issue']}"
-            
+            # Check if issue already exists
             if not any(existing.get('file') == issue['file'] and 
                       existing.get('line') == issue['line'] and 
                       existing.get('issue') == issue['issue'] 

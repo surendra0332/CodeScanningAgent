@@ -427,10 +427,10 @@ button:disabled {
 .btn-download {
     background: linear-gradient(135deg, #00b894 0%, #00a085 100%);
     color: white;
-    padding: 12px 24px;
+    padding: 8px 16px;
     border: none;
     border-radius: 50px;
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 600;
     cursor: pointer;
     transition: all 0.3s ease;
@@ -949,6 +949,7 @@ button:disabled {
         padding: 6px 12px;
     }
 }
+
 /* Footer Styles */
 .app-footer {
     background: linear-gradient(135deg, var(--header-bg-1) 0%, var(--header-bg-2) 100%);

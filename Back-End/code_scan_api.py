@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Depends
+from fpdf import FPDF
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -462,7 +463,98 @@ def download_json(job_id: str):
 
 @app.get('/api/download/{job_id}/pdf')
 def download_pdf(job_id: str):
-    """Download comprehensive PDF report (as text)"""
+    """Download comprehensive PDF report"""
+    job = scan_jobs.get(job_id) or db.get_scan(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail='Job not found')
+    if job['status'] != 'completed':
+        raise HTTPException(status_code=400, detail='Scan not completed yet')
+    
+    # Create PDF
+    pdf = FPDF()
+    pdf.add_page()
+    
+    # Title
+    pdf.set_font("Arial", 'B', 16)
+    pdf.cell(0, 10, "Code Scanner Agent - Scan Report", 0, 1, 'C')
+    pdf.ln(10)
+    
+    # Repository Info
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(0, 10, "Repository Information", 0, 1)
+    pdf.set_font("Arial", '', 10)
+    pdf.cell(0, 6, f"Repository: {job.get('repo_url', 'N/A')}", 0, 1)
+    pdf.cell(0, 6, f"Scan ID: {job_id}", 0, 1)
+    pdf.cell(0, 6, f"Date: {job.get('completed_at', 'N/A')}", 0, 1)
+    pdf.ln(5)
+    
+    # Summary
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(0, 10, "Scan Summary", 0, 1)
+    pdf.set_font("Arial", '', 10)
+    pdf.cell(0, 6, f"Total Issues: {job.get('total_issues', 0)}", 0, 1)
+    pdf.cell(0, 6, f"Security Issues: {job.get('security_issues', 0)}", 0, 1)
+    pdf.cell(0, 6, f"Quality Issues: {job.get('quality_issues', 0)}", 0, 1)
+    
+    # Unit Test Summary
+    unit_test = job.get('unit_test_summary', {})
+    if unit_test:
+        pdf.cell(0, 6, f"Unit Tests: {unit_test.get('passed', 0)}/{unit_test.get('total_tests', 0)} Passed", 0, 1)
+        pdf.cell(0, 6, f"Coverage: {unit_test.get('coverage', 'N/A')}%", 0, 1)
+    pdf.ln(5)
+    
+    # Issues List
+    if job.get('issues'):
+        pdf.set_font("Arial", 'B', 12)
+        pdf.cell(0, 10, "Detailed Issues", 0, 1)
+        pdf.set_font("Arial", '', 10)
+        
+        for i, issue in enumerate(job.get('issues', []), 1):
+            # Skip empty issues
+            if not issue.get('issue') or not issue.get('issue').strip():
+                continue
+
+            # Issue Title
+            severity = issue.get('severity', 'MEDIUM').upper()
+            pdf.set_font("Arial", 'B', 10)
+            pdf.cell(0, 6, f"{i}. [{severity}] {issue.get('type', 'Issue').title()}", 0, 1)
+            
+            # Details
+            pdf.set_font("Arial", '', 9)
+            pdf.multi_cell(0, 5, f"File: {issue.get('file', 'N/A')} (Line {issue.get('line', 'N/A')})")
+            pdf.multi_cell(0, 5, f"Issue: {issue.get('issue', 'N/A')}")
+            
+            # Fix Suggestion
+            minimal_fix = issue.get('minimal_fix')
+            if minimal_fix:
+                pdf.set_font("Arial", 'I', 9)
+                pdf.multi_cell(0, 5, f"Fix: {minimal_fix.get('suggestion', '')}")
+                pdf.set_font("Courier", '', 8)
+                pdf.multi_cell(0, 4, f"{minimal_fix.get('minimal_code', '')}")
+            
+            pdf.ln(3)
+            
+            # Page break if needed
+            if pdf.get_y() > 270:
+                pdf.add_page()
+    
+    # Output PDF
+    try:
+        # FPDF output returns a string in latin-1 encoding by default in this version
+        pdf_content = pdf.output(dest='S').encode('latin-1')
+        
+        return Response(
+            content=pdf_content,
+            media_type='application/pdf',
+            headers={"Content-Disposition": f"attachment; filename=report_{job_id[:8]}.pdf"}
+        )
+    except Exception as e:
+        print(f"PDF Generation Error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate PDF: {str(e)}")
+
+@app.get('/api/download/{job_id}/txt')
+def download_txt(job_id: str):
+    """Download comprehensive text report"""
     job = scan_jobs.get(job_id) or db.get_scan(job_id)
     if not job:
         raise HTTPException(status_code=404, detail='Job not found')
@@ -529,7 +621,7 @@ Quality Categories:
             if count > 0:
                 content += f"• {category.title()}: {count} issues\n"
         
-        content += "\nRECOMMendations\n---------------\n"
+        content += "\nRECOMMENDATIONS\n---------------\n"
         
         # Add recommendations
         for i, rec in enumerate(comprehensive_report['recommendations'], 1):
@@ -542,6 +634,10 @@ Quality Categories:
         
         # Add detailed issues
         for i, issue in enumerate(job.get('issues', []), 1):
+            # Skip empty issues
+            if not issue.get('issue') or not issue.get('issue').strip():
+                continue
+
             content += f"{i}. [{issue.get('severity', 'MEDIUM')}] {issue.get('issue', '')}\n"
             content += f"   File: {issue.get('file', '')} (Line {issue.get('line', '')})\n"
             content += f"   Type: {issue.get('type', '').title()}\n"
@@ -572,6 +668,10 @@ DETAILED ISSUES
 """
         
         for i, issue in enumerate(job.get('issues', []), 1):
+            # Skip empty issues
+            if not issue.get('issue') or not issue.get('issue').strip():
+                continue
+
             content += f"{i}. {issue.get('type', '').upper()}: {issue.get('issue', '')}\n"
             content += f"   File: {issue.get('file', '')} (Line {issue.get('line', '')})\n"
             content += f"   Severity: {issue.get('severity', '')}\n\n"
@@ -579,7 +679,7 @@ DETAILED ISSUES
     return Response(
         content=content,
         media_type='text/plain',
-        headers={"Content-Disposition": f"attachment; filename=comprehensive_report_{job_id[:8]}.txt"}
+        headers={"Content-Disposition": f"attachment; filename=report_{job_id[:8]}.txt"}
     )
 
 
@@ -610,8 +710,3 @@ def serve_favicon():
     """Serve favicon to prevent 404 errors"""
     from fastapi.responses import Response
     return Response(status_code=204)
-
-if __name__ == '__main__':
-    import uvicorn
-    port = int(os.getenv('PORT', 8000))
-    uvicorn.run(app, host='0.0.0.0', port=port)

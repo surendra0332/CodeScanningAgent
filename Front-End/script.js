@@ -202,6 +202,12 @@ class CodeScannerApp {
             }
         });
 
+        document.getElementById('downloadTxtBtn').addEventListener('click', () => {
+            if (this.currentJobId) {
+                this.directDownload('txt');
+            }
+        });
+
         // Modal event listeners
         document.getElementById('closeModal').addEventListener('click', () => {
             this.hideReportModal();
@@ -223,6 +229,13 @@ class CodeScannerApp {
             this.hideReportModal();
             if (this.currentJobId) {
                 this.directDownload('json');
+            }
+        });
+
+        document.getElementById('downloadTxtModalBtn').addEventListener('click', () => {
+            this.hideReportModal();
+            if (this.currentJobId) {
+                this.directDownload('txt');
             }
         });
 
@@ -713,7 +726,13 @@ class CodeScannerApp {
             // Create hidden link and click it
             const link = document.createElement('a');
             link.href = downloadUrl;
-            link.download = `report_${this.currentJobId.substring(0, 8)}.${format === 'pdf' ? 'txt' : format}`;
+            // Handle extension logic
+            let extension = format;
+            if (format === 'pdf') extension = 'pdf';
+            else if (format === 'json') extension = 'json';
+            else if (format === 'txt') extension = 'txt';
+
+            link.download = `report_${this.currentJobId.substring(0, 8)}.${extension}`;
             link.style.display = 'none';
 
             document.body.appendChild(link);

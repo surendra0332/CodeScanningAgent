@@ -17,6 +17,36 @@ class CodeScanner:
     def __init__(self):
         self.temp_dir = None
         self.llm_analyzer = LLMAnalyzer()
+        
+    def _strip_comments(self, line, file_extension='.py'):
+        """Strip comments from a line of code based on file extension"""
+        # Handle non-breaking spaces and other invisible characters
+        line = line.replace('\u00A0', ' ').replace('\t', ' ')
+        line = line.strip()
+        
+        if not line:
+            return ""
+            
+        # Python, Ruby, Shell
+        if file_extension in ['.py', '.rb', '.sh']:
+            if '#' in line:
+                # Handle cases where # is in a string
+                # Simple approach: split by # and check if it's inside quotes
+                # This is a basic approximation
+                parts = line.split('#')
+                clean_line = parts[0]
+                # If the # was inside a string, this might be wrong, but for security scanning
+                # it's safer to be aggressive about stripping comments to avoid false positives
+                return clean_line.strip()
+            return line
+            
+        # JS, Java, C#, Go, PHP, C, C++
+        elif file_extension in ['.js', '.java', '.cs', '.go', '.php', '.c', '.cpp', '.ts']:
+            if '//' in line:
+                return line.split('//')[0].strip()
+            return line
+            
+        return line
     
     def clone_repo(self, repo_url):
         """Clone repository to temporary directory"""
@@ -224,19 +254,7 @@ class CodeScanner:
             (r'TODO.*security', 'Security TODO found', 'LOW'),
             (r'FIXME.*security', 'Security FIXME found', 'MEDIUM'),
             (r'print.*password', 'Password in print statement', 'MEDIUM'),
-            (r'console\.log.*password', 'Password in console log', 'MEDIUM'),
-            
-            # GUARANTEED DETECTION PATTERNS - These will ALWAYS match something
-            (r'["\'][^"\s]{8,}["\']', 'Potential hardcoded string (security risk)', 'MEDIUM'),
-            (r'=\s*["\'][A-Za-z0-9]{6,}["\']', 'Hardcoded value assignment (potential secret)', 'MEDIUM'),
-            (r'localhost', 'Hardcoded localhost reference (configuration issue)', 'LOW'),
-            (r'127\.0\.0\.1', 'Hardcoded IP address (configuration issue)', 'LOW'),
-            (r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b', 'Hardcoded IP address detected', 'MEDIUM'),
-            (r'\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b', 'Hardcoded email address detected', 'LOW'),
-            (r'\b\d{10,}\b', 'Hardcoded numeric value (potential ID/key)', 'LOW'),
-            (r'["\'][^"\s]*[Pp]assword[^"\s]*["\']', 'Password-related string detected', 'MEDIUM'),
-            (r'["\'][^"\s]*[Kk]ey[^"\s]*["\']', 'Key-related string detected', 'MEDIUM'),
-            (r'["\'][^"\s]*[Tt]oken[^"\s]*["\']', 'Token-related string detected', 'MEDIUM')
+            (r'console\.log.*password', 'Password in console log', 'MEDIUM')
         ]
         
         for root, dirs, files in os.walk(self.temp_dir):
@@ -267,18 +285,69 @@ class CodeScanner:
                             
                         lines = content.split('\n')
                         
+                        in_multiline_comment = False
+                        multiline_marker = None
+                        
                         for line_num, line in enumerate(lines, 1):
                             line_content = line.strip()
+                            file_ext = os.path.splitext(file)[1]
+                            
+                            # Handle multi-line comments
+                            if file_ext in ['.py', '.rb']:
+                                # Check for markers
+                                if '"""' in line_content:
+                                    if not in_multiline_comment:
+                                        in_multiline_comment = True
+                                        multiline_marker = '"""'
+                                        if line_content.count('"""') > 1:
+                                            in_multiline_comment = False
+                                            multiline_marker = None
+                                    elif multiline_marker == '"""':
+                                        in_multiline_comment = False
+                                        multiline_marker = None
+                                elif "'''" in line_content:
+                                    if not in_multiline_comment:
+                                        in_multiline_comment = True
+                                        multiline_marker = "'''"
+                                        if line_content.count("'''") > 1:
+                                            in_multiline_comment = False
+                                            multiline_marker = None
+                                    elif multiline_marker == "'''":
+                                        in_multiline_comment = False
+                                        multiline_marker = None
+                            elif file_ext in ['.js', '.java', '.c', '.cpp', '.cs', '.php', '.go', '.ts']:
+                                if '/*' in line_content:
+                                    if not in_multiline_comment:
+                                        in_multiline_comment = True
+                                        if '*/' in line_content:
+                                            in_multiline_comment = False
+                                elif '*/' in line_content:
+                                    if in_multiline_comment:
+                                        in_multiline_comment = False
+                                        
+                            if in_multiline_comment:
+                                continue
                             
                             # Skip empty lines, comments, and imports
                             if (not line_content or 
                                 line_content.startswith(('#', '//', '/*', '*', '"""', "'''")) or
                                 line_content.startswith(('import ', 'from '))):
                                 continue
+                                
+                            # Strip inline comments for analysis
+                            file_ext = os.path.splitext(file)[1]
+                            clean_content = self._strip_comments(line_content, file_ext)
+                            
+                            # Double check for empty content after stripping
+                            if not clean_content or not clean_content.strip():
+                                continue
+                            
+                            if not clean_content:
+                                continue
                             
                             for pattern, message, severity in security_patterns:
-                                if re.search(pattern, line_content, re.IGNORECASE):
-                                    if self._is_valid_security_issue(line_content, pattern):
+                                if re.search(pattern, clean_content, re.IGNORECASE):
+                                    if self._is_valid_security_issue(clean_content, pattern):
                                         # Create unique issue identifier
                                         issue_key = f"{rel_path}:{line_num}:{message}"
                                         if issue_key not in seen_issues:
@@ -318,6 +387,10 @@ class CodeScanner:
         # Skip ONLY imports and comments - nothing else
         if (line_content.strip().startswith(('import ', 'from ')) or
             line_content.strip().startswith(('#', '//', '/*'))):
+            return False
+            
+        # Double check it's not just a comment that wasn't stripped correctly
+        if not line_content.strip():
             return False
             
         # Accept EVERYTHING else as security issue
@@ -575,11 +648,48 @@ class CodeScanner:
                 'minimal_code': '# Implement the required functionality\n# or remove if not needed',
                 'explanation': 'Address all TODO/FIXME comments before deployment'
             }
-        else:
+        elif 'docstring' in issue_text or 'missing docstring' in issue_text:
             return {
-                'suggestion': 'Follow coding best practices',
-                'minimal_code': '# Write clean, readable code\n# Follow language conventions',
-                'explanation': 'Maintain code quality and consistency'
+                'suggestion': 'Add a docstring to explain functionality',
+                'minimal_code': 'def function():\n    """Description of what this function does."""\n    pass',
+                'explanation': 'Docstrings improve code readability and maintainability'
+            }
+        elif 'unused' in issue_text and 'import' in issue_text:
+            return {
+                'suggestion': 'Remove unused imports',
+                'minimal_code': '# Remove the unused import statement',
+                'explanation': 'Unused imports clutter code and can slow down startup'
+            }
+        elif 'unused' in issue_text and 'variable' in issue_text:
+            return {
+                'suggestion': 'Remove unused variables',
+                'minimal_code': '# Remove the unused variable or prefix with _',
+                'explanation': 'Unused variables indicate dead code or bugs'
+            }
+        elif 'too long' in issue_text:
+            return {
+                'suggestion': 'Refactor into smaller functions/classes',
+                'minimal_code': '# Break down large functions/classes into smaller components',
+                'explanation': 'Large functions/classes are hard to test and maintain'
+            }
+        elif 'broad exception' in issue_text or 'except:' in issue_text:
+            return {
+                'suggestion': 'Catch specific exceptions',
+                'minimal_code': 'try:\n    ...\nexcept ValueError:\n    # Handle specific error',
+                'explanation': 'Catching all exceptions masks bugs'
+            }
+        elif 'print' in issue_text or 'console.log' in issue_text:
+            return {
+                'suggestion': 'Use a logger instead of print statements',
+                'minimal_code': 'import logging\nlogging.info("Message")',
+                'explanation': 'Logging provides better control and output formatting'
+            }
+        else:
+            # Dynamic fallback using the issue text itself
+            return {
+                'suggestion': f'Fix: {issue.get("issue", "Address this issue")}',
+                'minimal_code': '# Review and fix the reported issue\n# Ensure code follows project standards',
+                'explanation': f'Address the reported issue: {issue.get("issue", "Quality improvement needed")}'
             }
     
     def generate_minimal_project_structure(self):

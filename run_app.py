@@ -28,11 +28,19 @@ if __name__ == '__main__':
             print("Debug mode: ON (auto-reload enabled)")
         
         # Start server
+        # Set PYTHONPATH for the reloader process to find the module
+        if debug:
+            backend_path = os.path.join(os.path.dirname(__file__), 'Back-End')
+            current_pythonpath = os.environ.get('PYTHONPATH', '')
+            os.environ['PYTHONPATH'] = f"{backend_path}{os.pathsep}{current_pythonpath}"
+        
+        # Start server
         uvicorn.run(
-            app, 
+            "code_scan_api:app", 
             host=host, 
             port=port,
-            reload=debug  # Auto-reload on code changes in debug mode
+            reload=debug,  # Auto-reload on code changes in debug mode
+            reload_dirs=[os.path.join(os.path.dirname(__file__), 'Back-End')] if debug else None
         )
         
     except KeyboardInterrupt:
