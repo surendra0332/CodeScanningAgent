@@ -31,9 +31,9 @@ wheels/
 .env.production
 
 # Database (keep scans.db for functionality)
-# *.db
-# *.sqlite3
-# scans.db
+*.db
+*.sqlite3
+scans.db
 
 # Logs
 *.log
