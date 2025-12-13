@@ -171,6 +171,16 @@ class CodeScannerApp {
 
         document.getElementById('scanForm').addEventListener('submit', (e) => this.handleScanSubmit(e));
 
+        const unitTestReportInput = document.getElementById('unitTestReport');
+        if (unitTestReportInput) {
+            unitTestReportInput.addEventListener('change', (e) => {
+                const fileName = e.target.files[0] ? e.target.files[0].name : 'No file chosen';
+                document.getElementById('unitTestReportName').textContent = fileName;
+            });
+        }
+
+
+
         const refreshBtn = document.getElementById('refreshScansBtn');
         refreshBtn.addEventListener('click', () => {
             console.log('Refresh button clicked');
@@ -293,11 +303,17 @@ class CodeScannerApp {
             formData.append('unit_test_report', unitTestFile);
         }
 
+        const prdFile = document.getElementById('prdDocument').files[0];
+        if (prdFile) {
+            formData.append('prd_document', prdFile);
+        }
+
         try {
             this.showLoading('Starting scan...');
             console.log('Submitting scan request:', {
                 repo_url: repoUrl,
-                has_unit_test: !!unitTestFile
+                has_unit_test: !!unitTestFile,
+                has_prd: !!prdFile
             });
 
             const response = await fetch(`${this.baseUrl}/scan`, {
@@ -491,25 +507,115 @@ class CodeScannerApp {
         // Count minimal fixes
         const minimalFixes = report.issues ? report.issues.filter(issue => issue.minimal_fix).length : 0;
 
+        // Count issues by type
+        const issuesByType = {
+            performance: 0,
+            maintainability: 0,
+            best_practice: 0,
+            documentation: 0,
+            accessibility: 0,
+            testability: 0
+        };
+
+        if (report.issues) {
+            report.issues.forEach(issue => {
+                const type = issue.type?.toLowerCase();
+                if (issuesByType.hasOwnProperty(type)) {
+                    issuesByType[type]++;
+                }
+            });
+        }
+
+        // Build cards HTML - only show categories with issues > 0
+        let cardsHTML = `
+            <div class="summary-card">
+                <h3>${report.total_issues || 0}</h3>
+                <p>Total Issues</p>
+            </div>
+            <div class="summary-card">
+                <h3>${report.security_issues || 0}</h3>
+                <p>Security Issues</p>
+            </div>
+            <div class="summary-card">
+                <h3>${report.quality_issues || 0}</h3>
+                <p>Quality Issues</p>
+            </div>
+        `;
+
+        // Add Performance only if > 0
+        if (issuesByType.performance > 0) {
+            cardsHTML += `
+                <div class="summary-card">
+                    <h3>${issuesByType.performance}</h3>
+                    <p>Performance Issues</p>
+                </div>
+            `;
+        }
+
+        // Add Maintainability only if > 0
+        if (issuesByType.maintainability > 0) {
+            cardsHTML += `
+                <div class="summary-card">
+                    <h3>${issuesByType.maintainability}</h3>
+                    <p>Maintainability Issues</p>
+                </div>
+            `;
+        }
+
+        // Add Best Practice only if > 0
+        if (issuesByType.best_practice > 0) {
+            cardsHTML += `
+                <div class="summary-card">
+                    <h3>${issuesByType.best_practice}</h3>
+                    <p>Best Practice Issues</p>
+                </div>
+            `;
+        }
+
+        // Add Documentation only if > 0
+        if (issuesByType.documentation > 0) {
+            cardsHTML += `
+                <div class="summary-card">
+                    <h3>${issuesByType.documentation}</h3>
+                    <p>Documentation Issues</p>
+                </div>
+            `;
+        }
+
+        // Add Accessibility only if > 0
+        if (issuesByType.accessibility > 0) {
+            cardsHTML += `
+                <div class="summary-card">
+                    <h3>${issuesByType.accessibility}</h3>
+                    <p>Accessibility Issues</p>
+                </div>
+            `;
+        }
+
+        // Add Testability only if > 0
+        if (issuesByType.testability > 0) {
+            cardsHTML += `
+                <div class="summary-card">
+                    <h3>${issuesByType.testability}</h3>
+                    <p>Testability Issues</p>
+                </div>
+            `;
+        }
+
+        // Minimal Fixes (always show)
+        cardsHTML += `
+            <div class="summary-card">
+                <h3>${minimalFixes}</h3>
+                <p>Minimal Fixes</p>
+            </div>
+        `;
+
+        // Add unit test card if present
+        cardsHTML += unitTestCard;
+
         resultsSummary.innerHTML = reportHeader + `
             <div class="summary-cards">
-                <div class="summary-card">
-                    <h3>${report.total_issues || 0}</h3>
-                    <p>Total Issues</p>
-                </div>
-                <div class="summary-card">
-                    <h3>${report.security_issues || 0}</h3>
-                    <p>Security Issues</p>
-                </div>
-                <div class="summary-card">
-                    <h3>${report.quality_issues || 0}</h3>
-                    <p>Quality Issues</p>
-                </div>
-                <div class="summary-card">
-                    <h3>${minimalFixes}</h3>
-                    <p>Minimal Fixes</p>
-                </div>
-                ${unitTestCard}
+                ${cardsHTML}
             </div>
         `;
 

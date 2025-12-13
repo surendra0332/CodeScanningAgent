@@ -42,12 +42,21 @@ class ReportGenerator:
             'detailed_analysis': self._generate_detailed_analysis(issues, metrics),
             'security_assessment': self._generate_security_assessment(issues, metrics),
             'quality_assessment': self._generate_quality_assessment(issues, metrics),
+            'performance_assessment': self._generate_performance_assessment(issues, metrics),
+            'best_practices_assessment': self._generate_best_practices_assessment(issues, metrics),
+            'documentation_assessment': self._generate_documentation_assessment(issues, metrics),
             'recommendations': self._generate_recommendations(issues, repo_analysis),
             'metrics': metrics,
             'raw_data': {
                 'total_issues': len(issues),
                 'security_issues': len([i for i in issues if i.get('type') == 'security']),
                 'quality_issues': len([i for i in issues if i.get('type') == 'quality']),
+                'performance_issues': len([i for i in issues if i.get('type') == 'performance']),
+                'best_practice_issues': len([i for i in issues if i.get('type') == 'best_practice']),
+                'maintainability_issues': len([i for i in issues if i.get('type') == 'maintainability']),
+                'documentation_issues': len([i for i in issues if i.get('type') == 'documentation']),
+                'accessibility_issues': len([i for i in issues if i.get('type') == 'accessibility']),
+                'testability_issues': len([i for i in issues if i.get('type') == 'testability']),
                 'critical_issues': len([i for i in issues if i.get('severity') == 'CRITICAL']),
                 'high_issues': len([i for i in issues if i.get('severity') == 'HIGH'])
             }
@@ -95,11 +104,14 @@ class ReportGenerator:
         total_issues = len(issues)
         security_issues = len([i for i in issues if i.get('type') == 'security'])
         quality_issues = len([i for i in issues if i.get('type') == 'quality'])
+        performance_issues = len([i for i in issues if i.get('type') == 'performance'])
         
         # Dynamic scoring based on actual findings
         security_score = max(0, 100 - (security_issues * 15))
         quality_score = max(0, 100 - (quality_issues * 10))
-        overall_score = (security_score + quality_score) / 2
+        performance_score = max(0, 100 - (performance_issues * 10))
+        
+        overall_score = (security_score + quality_score + performance_score) / 3
         
         # Risk assessment based on issue severity
         critical_count = len([i for i in issues if i.get('severity') == 'CRITICAL'])
@@ -125,6 +137,7 @@ class ReportGenerator:
             'overall_score': round(overall_score, 1),
             'security_score': round(security_score, 1),
             'quality_score': round(quality_score, 1),
+            'performance_score': round(performance_score, 1),
             'risk_level': risk_level,
             'test_coverage': test_coverage,
             'issue_density': round(total_issues / max(1, test_coverage/10), 2),
@@ -278,6 +291,40 @@ class ReportGenerator:
             'quality_categories': {k: len(v) for k, v in categories.items()},
             'quality_score': metrics['quality_score'],
             'maintainability_index': max(0, 100 - len(quality_issues) * 5)
+        }
+
+    def _generate_performance_assessment(self, issues: List[Dict], metrics: Dict) -> Dict[str, Any]:
+        """Generate performance-specific assessment"""
+        perf_issues = [i for i in issues if i.get('type') == 'performance']
+        
+        return {
+            'total_performance_issues': len(perf_issues),
+            'performance_score': metrics.get('performance_score', 100),
+            'issues': perf_issues
+        }
+
+    def _generate_best_practices_assessment(self, issues: List[Dict], metrics: Dict) -> Dict[str, Any]:
+        """Generate best practices and maintainability assessment"""
+        bp_issues = [i for i in issues if i.get('type') == 'best_practice']
+        maint_issues = [i for i in issues if i.get('type') == 'maintainability']
+        
+        return {
+            'total_best_practice_issues': len(bp_issues),
+            'total_maintainability_issues': len(maint_issues),
+            'issues': bp_issues + maint_issues
+        }
+
+    def _generate_documentation_assessment(self, issues: List[Dict], metrics: Dict) -> Dict[str, Any]:
+        """Generate documentation, accessibility, and testability assessment"""
+        doc_issues = [i for i in issues if i.get('type') == 'documentation']
+        acc_issues = [i for i in issues if i.get('type') == 'accessibility']
+        test_issues = [i for i in issues if i.get('type') == 'testability']
+        
+        return {
+            'total_documentation_issues': len(doc_issues),
+            'total_accessibility_issues': len(acc_issues),
+            'total_testability_issues': len(test_issues),
+            'issues': doc_issues + acc_issues + test_issues
         }
     
     def _generate_recommendations(self, issues: List[Dict], repo_analysis: Dict) -> List[Dict[str, str]]:
