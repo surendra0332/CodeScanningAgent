@@ -121,6 +121,9 @@ class CodeScanner:
             # Detect file types for smart scanner selection
             self._detect_file_types()
             
+            # Detect file types for smart scanner selection
+            self._detect_file_types()
+            
             # Verify we have actual code files
             code_files = self._count_code_files()
             if code_files == 0:

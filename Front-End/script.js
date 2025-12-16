@@ -310,7 +310,6 @@ class CodeScannerApp {
 
         const deepScan = document.getElementById('deepScan').checked;
         formData.append('deep_scan', deepScan);
-
         try {
             this.showLoading('Starting scan...');
             console.log('Submitting scan request:', {
