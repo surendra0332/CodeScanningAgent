@@ -5,8 +5,12 @@ from fastapi.responses import FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 import uuid
+import shutil
 import threading
 from datetime import datetime
+from typing import Dict, Any, List, Optional
+import uvicorn
+from pydantic import BaseModel
 from scanner import CodeScanner
 from database import ScanDatabase
 from report_generator import generate_report_for_scan
@@ -67,15 +71,17 @@ def validate_unit_test_report(repo_url, unit_test_data, cloned_repo_path=None):
 
 
 
-def run_scan(job_id, repo_url):
+def run_scan(job_id, repo_url, deep_scan=False):
     """Background task to run code scanning"""
-    scanner = CodeScanner()
+    scanner = CodeScanner(deep_scan=deep_scan)
     
     try:
         # Update status to running
+        start_time = datetime.now()
         scan_jobs[job_id]['status'] = 'running'
-        scan_jobs[job_id]['updated_at'] = datetime.now().isoformat()
-        print(f"Starting scan for job {job_id} with repo {repo_url}")
+        scan_jobs[job_id]['started_at'] = start_time.isoformat()
+        scan_jobs[job_id]['updated_at'] = start_time.isoformat()
+        print(f"Starting scan for job {job_id} with repo {repo_url} at {start_time}")
         
         # Repository URL already validated in API endpoint
         print(f"Processing repository URL: {repo_url}")
@@ -118,18 +124,64 @@ def run_scan(job_id, repo_url):
         print(f"✅ Post-clone validation successful for job {job_id}")
 
         
-        # Run scans
-        print(f"Running security scan for job {job_id}")
-        security_issues = scanner.scan_security()
-        print(f"Security scan complete: {len(security_issues)} issues found")
+        # Smart Scanner Selection Based on Language
+        print(f"🎯 Smart Scanner Selection for job {job_id}")
+        print(f"   Mode: {'DEEP SCAN' if scanner.deep_scan else 'Standard Scan'}")
+        print(f"   Python files: {len(scanner.python_files)}")
+        print(f"   Other language files: {len(scanner.other_files)}")
         
-        print(f"Running quality scan for job {job_id}")
-        quality_issues = scanner.scan_quality()
-        print(f"Quality scan complete: {len(quality_issues)} issues found")
+        security_issues = []
+        quality_issues = []
+        semgrep_issues = []
         
-        # Combine results
-        all_issues = security_issues + quality_issues
-        print(f"Total issues found for job {job_id}: {len(all_issues)}")
+        # For Python files: Use Bandit + Pylint (specialized tools)
+        if scanner.python_files:
+            print(f"✅ Python detected: Running Bandit + Pylint for {len(scanner.python_files)} files")
+            security_issues = scanner.scan_security()
+            print(f"   Bandit complete: {len(security_issues)} security issues found")
+            
+            quality_issues = scanner.scan_quality()
+            print(f"   Pylint complete: {len(quality_issues)} quality issues found")
+        else:
+            print(f"⚠️  No Python files detected, skipping Bandit/Pylint")
+        
+        # For all files (Python + Others): Run Semgrep (multi-language)
+        if scanner.python_files or scanner.other_files:
+            if scanner.other_files:
+                print(f"✅ Other languages detected: Running Semgrep for {len(scanner.other_files)} files")
+            else:
+                print(f"✅ Running Semgrep for additional Python coverage")
+            
+            semgrep_issues = scanner.scan_semgrep()
+            print(f"   Semgrep complete: {len(semgrep_issues)} issues found")
+        
+        # AI analysis ALWAYS runs (for ALL languages)
+        print(f"🤖 AI Analysis: Running for ALL files (Python + Others)")
+        prd_content = scan_jobs[job_id].get('prd_content')
+        ai_issues = scanner.scan_ai(prd_content=prd_content)
+        print(f"   AI complete: {len(ai_issues)} issues found")
+        
+        # Additional analysis for comprehensive issue detection
+        print(f"📋 Running comprehensive analysis (Performance, Maintainability, Best Practice, Documentation)")
+        performance_issues = scanner._analyze_performance()
+        maintainability_issues = scanner._analyze_maintainability()
+        best_practice_issues = scanner._analyze_best_practices()
+        documentation_issues = scanner._analyze_documentation()
+        print(f"   ├─ Performance: {len(performance_issues)} issues")
+        print(f"   ├─ Maintainability: {len(maintainability_issues)} issues")
+        print(f"   ├─ Best Practice: {len(best_practice_issues)} issues")
+        print(f"   └─ Documentation: {len(documentation_issues)} issues")
+        
+        # Combine results from all active scanners
+        all_issues = (security_issues + quality_issues + semgrep_issues + ai_issues + 
+                      performance_issues + maintainability_issues + 
+                      best_practice_issues + documentation_issues)
+        print(f"📊 Total issues found for job {job_id}: {len(all_issues)}")
+        print(f"   ├─ Bandit/Pylint: {len(security_issues) + len(quality_issues)}")
+        print(f"   ├─ Semgrep: {len(semgrep_issues)}")
+        print(f"   ├─ AI: {len(ai_issues)}")
+        print(f"   └─ Additional: {len(performance_issues) + len(maintainability_issues) + len(best_practice_issues) + len(documentation_issues)}")
+
         
         # Generate comprehensive analysis
         repo_files = scanner.get_repository_files()
@@ -163,12 +215,37 @@ def run_scan(job_id, repo_url):
         })
         
         # Update job with enhanced results and dynamic report
+        # Count issues by type from all_issues (includes AI + additional analysis)
+        security_count = len([i for i in all_issues if i.get('type') == 'security'])
+        quality_count = len([i for i in all_issues if i.get('type') == 'quality'])
+        performance_count = len([i for i in all_issues if i.get('type') == 'performance'])
+        maintainability_count = len([i for i in all_issues if i.get('type') == 'maintainability'])
+        best_practice_count = len([i for i in all_issues if i.get('type') == 'best_practice'])
+        documentation_count = len([i for i in all_issues if i.get('type') == 'documentation'])
+        
+        # Calculate scan stats
+        scan_stats = scanner.get_scan_statistics()
+        
+        # Calculate duration
+        end_time = datetime.now()
+        duration_seconds = (end_time - start_time).total_seconds()
+        duration_str = f"{duration_seconds:.2f}s"
+        
         scan_jobs[job_id].update({
             'status': 'completed',
+            'scan_duration': duration_str,
+            'scan_duration_seconds': duration_seconds,
             'issues': all_issues,
             'total_issues': len(all_issues),
-            'security_issues': len(security_issues),
-            'quality_issues': len(quality_issues),
+            'files_scanned': scan_stats.get('files_scanned', 0),
+            'directories_scanned': scan_stats.get('directories_scanned', 0),
+            'scan_mode': 'deep' if scanner.deep_scan else 'standard',
+            'security_issues': security_count,
+            'quality_issues': quality_count,
+            'performance_issues': performance_count,
+            'maintainability_issues': maintainability_count,
+            'best_practice_issues': best_practice_count,
+            'documentation_issues': documentation_count,
             'accuracy_metrics': accuracy_metrics,
             'comprehensive_report': comprehensive_report,
             'minimal_code_suggestions': {
@@ -227,7 +304,9 @@ def run_scan(job_id, repo_url):
 @app.post('/api/scan')
 def start_scan(
     repo_url: str = Form(...),
-    unit_test_report: UploadFile = File(..., description="Unit test report JSON file (Required)")
+    unit_test_report: UploadFile = File(..., description="Unit test report JSON file (Required)"),
+    prd_document: Optional[UploadFile] = File(None, description="Optional PRD document to guide analysis"),
+    deep_scan: bool = Form(False)
 ):
     """Start a new code scan"""
     job_id = str(uuid.uuid4())
@@ -291,11 +370,24 @@ def start_scan(
         if hasattr(unit_test_report.file, 'close'):
             unit_test_report.file.close()
     
+    # Process PRD document if provided
+    prd_content = None
+    if prd_document and prd_document.filename:
+        try:
+            content = prd_document.file.read()
+            # Try to decode as UTF-8
+            prd_content = content.decode('utf-8', errors='replace')
+            print(f"✅ Received PRD document: {prd_document.filename} ({len(prd_content)} bytes)")
+        except Exception as e:
+            print(f"⚠️ Failed to read PRD document: {e}")
+
     # Create job entry
     scan_jobs[job_id] = {
         'job_id': job_id,
         'repo_url': repo_url,
         'unit_test_report': test_report_data,
+        'prd_content': prd_content,
+        'deep_scan': deep_scan,
         'status': 'queued',
         'created_at': datetime.now().isoformat(),
         'updated_at': datetime.now().isoformat()
@@ -310,7 +402,7 @@ def start_scan(
     print(f"Scan job created successfully: {job_id} for {repo_url}")
     
     # Start background scan
-    thread = threading.Thread(target=run_scan, args=(job_id, repo_url))
+    thread = threading.Thread(target=run_scan, args=(job_id, repo_url, deep_scan))
     thread.daemon = True
     thread.start()
     
@@ -345,6 +437,8 @@ def get_scan_status(job_id: str):
             'total_issues': job.get('total_issues', 0),
             'security_issues': job.get('security_issues', 0),
             'quality_issues': job.get('quality_issues', 0),
+            'files_scanned': job.get('files_scanned', 0),
+            'directories_scanned': job.get('directories_scanned', 0),
             'completed_at': job.get('completed_at')
         })
     elif job['status'] == 'failed':
@@ -370,9 +464,19 @@ def get_scan_report(job_id: str):
         'job_id': job_id,
         'repo_url': job['repo_url'],
         'status': job['status'],
+        'created_at': job['created_at'],
         'total_issues': job.get('total_issues', 0),
         'security_issues': job.get('security_issues', 0),
         'quality_issues': job.get('quality_issues', 0),
+        'performance_issues': job.get('performance_issues', 0),
+        'maintainability_issues': job.get('maintainability_issues', 0),
+        'best_practice_issues': job.get('best_practice_issues', 0),
+        'documentation_issues': job.get('documentation_issues', 0),
+        'files_scanned': job.get('files_scanned', 0),
+        'directories_scanned': job.get('directories_scanned', 0),
+        'directories_scanned': job.get('directories_scanned', 0),
+        'scan_duration': job.get('scan_duration', 'N/A'),
+        'scan_mode': job.get('scan_mode', 'standard'),
         'issues': job.get('issues', []),
         'minimal_code_suggestions': job.get('minimal_code_suggestions', {}),
         'unit_test_summary': job.get('unit_test_summary', {}),
@@ -446,6 +550,12 @@ def download_json(job_id: str, view: bool = False):
         "total_issues": job.get('total_issues', 0),
         "security_issues": job.get('security_issues', 0),
         "quality_issues": job.get('quality_issues', 0),
+        "performance_issues": len([i for i in job.get('issues', []) if i.get('type') == 'performance']),
+        "best_practice_issues": len([i for i in job.get('issues', []) if i.get('type') == 'best_practice']),
+        "maintainability_issues": len([i for i in job.get('issues', []) if i.get('type') == 'maintainability']),
+        "documentation_issues": len([i for i in job.get('issues', []) if i.get('type') == 'documentation']),
+        "accessibility_issues": len([i for i in job.get('issues', []) if i.get('type') == 'accessibility']),
+        "testability_issues": len([i for i in job.get('issues', []) if i.get('type') == 'testability']),
         "issues": job.get('issues', []),
         "minimal_code_suggestions": job.get('minimal_code_suggestions', {}),
         "unit_test_summary": job.get('unit_test_summary', {}),
@@ -494,6 +604,21 @@ def download_pdf(job_id: str, view: bool = False):
     pdf.cell(0, 6, f"Total Issues: {job.get('total_issues', 0)}", 0, 1)
     pdf.cell(0, 6, f"Security Issues: {job.get('security_issues', 0)}", 0, 1)
     pdf.cell(0, 6, f"Quality Issues: {job.get('quality_issues', 0)}", 0, 1)
+    
+    # New Categories
+    perf_count = len([i for i in job.get('issues', []) if i.get('type') == 'performance'])
+    bp_count = len([i for i in job.get('issues', []) if i.get('type') == 'best_practice'])
+    maint_count = len([i for i in job.get('issues', []) if i.get('type') == 'maintainability'])
+    doc_count = len([i for i in job.get('issues', []) if i.get('type') == 'documentation'])
+    acc_count = len([i for i in job.get('issues', []) if i.get('type') == 'accessibility'])
+    test_count = len([i for i in job.get('issues', []) if i.get('type') == 'testability'])
+    
+    if perf_count > 0: pdf.cell(0, 6, f"Performance Issues: {perf_count}", 0, 1)
+    if bp_count > 0: pdf.cell(0, 6, f"Best Practice Issues: {bp_count}", 0, 1)
+    if maint_count > 0: pdf.cell(0, 6, f"Maintainability Issues: {maint_count}", 0, 1)
+    if doc_count > 0: pdf.cell(0, 6, f"Documentation Issues: {doc_count}", 0, 1)
+    if acc_count > 0: pdf.cell(0, 6, f"Accessibility Issues: {acc_count}", 0, 1)
+    if test_count > 0: pdf.cell(0, 6, f"Testability Issues: {test_count}", 0, 1)
     
     # Unit Test Summary
     unit_test = job.get('unit_test_summary', {})
@@ -594,6 +719,7 @@ KEY METRICS
 Overall Score: {comprehensive_report['metrics']['overall_score']}/100
 Security Score: {comprehensive_report['metrics']['security_score']}/100
 Quality Score: {comprehensive_report['metrics']['quality_score']}/100
+Performance Score: {comprehensive_report['metrics'].get('performance_score', 'N/A')}/100
 Risk Level: {comprehensive_report['metrics']['risk_level']}
 Test Coverage: {comprehensive_report['metrics']['test_coverage']}%
 Compliance Status: {comprehensive_report['metrics']['compliance_status']}
@@ -628,6 +754,34 @@ Quality Categories:
         for category, count in comprehensive_report['quality_assessment']['quality_categories'].items():
             if count > 0:
                 content += f"• {category.title()}: {count} issues\n"
+        
+        # Performance Section
+        if comprehensive_report.get('performance_assessment'):
+            content += f"""
+PERFORMANCE ASSESSMENT
+---------------------
+Total Performance Issues: {comprehensive_report['performance_assessment']['total_performance_issues']}
+Performance Score: {comprehensive_report['performance_assessment']['performance_score']}/100
+"""
+        
+        # Best Practices Section
+        if comprehensive_report.get('best_practices_assessment'):
+            content += f"""
+BEST PRACTICES & MAINTAINABILITY
+-------------------------------
+Best Practice Issues: {comprehensive_report['best_practices_assessment']['total_best_practice_issues']}
+Maintainability Issues: {comprehensive_report['best_practices_assessment']['total_maintainability_issues']}
+"""
+        
+        # Documentation & Others Section
+        if comprehensive_report.get('documentation_assessment'):
+            content += f"""
+ADDITIONAL ASSESSMENTS
+---------------------
+Documentation Issues: {comprehensive_report['documentation_assessment']['total_documentation_issues']}
+Accessibility Issues: {comprehensive_report['documentation_assessment']['total_accessibility_issues']}
+Testability Issues: {comprehensive_report['documentation_assessment']['total_testability_issues']}
+"""
         
         content += "\nRECOMMENDATIONS\n---------------\n"
         

@@ -76,6 +76,24 @@
                             </small>
                         </div>
 
+                        <div class="form-group">
+                            <label for="prdDocument">PRD Document (Optional):</label>
+                            <input type="file" id="prdDocument" name="prd_document" accept=".txt,.md,.pdf">
+                            <small><strong>Optional:</strong> Upload a Product Requirements Document (PRD) to guide the
+                                AI analysis.
+                            </small>
+                        </div>
+
+                        <div class="form-group checkbox-group">
+                            <label class="checkbox-container">
+                                <input type="checkbox" id="deepScan" name="deep_scan">
+                                <span class="checkmark"></span>
+                                <span class="label-text">Enable Deep Scan (Slower, but thorough)</span>
+                            </label>
+                            <small class="hint-text">Select this for a comprehensive analysis including large files and
+                                strict rules.</small>
+                        </div>
+
                         <button type="submit" id="startScanBtn">Start Scan</button>
                     </form>
                 </section>
@@ -136,6 +154,32 @@
                             <button id="closeResultsBtn" class="btn-secondary">✕ Close</button>
                         </div>
                     </div>
+
+                    <!-- Result Card with Stats -->
+                    <div class="result-card" id="resultCard">
+                        <div class="scan-header">
+                            <h3>Repository Analysis</h3>
+                            <span class="status-badge" id="scanStatusBadge">Completed</span>
+                        </div>
+
+                        <div class="repo-info">
+                            <p><strong>Repository:</strong> <a href="#" id="resultRepoUrl" target="_blank">...</a></p>
+                            <p class="scan-time">Scanned on: <span id="scanTime">...</span></p>
+                        </div>
+
+                        <!-- Scan Scope Stats -->
+                        <div class="scan-stats-grid">
+                            <div class="stat-item scope">
+                                <span class="stat-value" id="filesScanned">0</span>
+                                <span class="stat-label">Files Scanned</span>
+                            </div>
+                            <div class="stat-item scope">
+                                <span class="stat-value" id="dirsScanned">0</span>
+                                <span class="stat-label">Directories Scanned</span>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="results-summary" id="resultsSummary"></div>
                     <div class="issues-container" id="issuesContainer"></div>
                     <div class="minimal-suggestions" id="minimalSuggestions" style="display: none;">

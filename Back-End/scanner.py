@@ -7,16 +7,41 @@ import re
 from llm_integration import LLMAnalyzer
 
 # Optional imports with fallbacks
-try:
-    from git import Repo  # type: ignore
-except ImportError:
-    print("Warning: GitPython not installed. Repository cloning disabled.")
-    Repo = None
+import git
+from git import Repo
 
 class CodeScanner:
-    def __init__(self):
+    def __init__(self, deep_scan=False):
         self.temp_dir = None
         self.llm_analyzer = LLMAnalyzer()
+        self.python_files = []
+        self.other_files = []
+        self.deep_scan = deep_scan
+        
+        # Constants for file filtering
+        self.IGNORED_DIRS = {'node_modules', '__pycache__', 'build', 'dist', '.git', 'venv', '.venv', 'env', '.env'}
+        self.CODE_EXTENSIONS = {'.py', '.js', '.java', '.php', '.rb', '.go', '.cs', '.cpp', '.c', '.ts'}
+        
+        # Configure limits based on scan mode
+        self.file_size_limit = 100000 if deep_scan else 20000  # 100KB vs 20KB
+        self.total_ai_size_limit = 500000 if deep_scan else 100000  # 500KB vs 100KB
+        self.timeout_scale = 3.0 if deep_scan else 1.0  # 3x timeout for deep scan
+        
+    def _detect_file_types(self):
+        """Detect and categorize Python vs other language files"""
+        if not self.temp_dir or not os.path.exists(self.temp_dir):
+            return
+        
+        for root, dirs, files in os.walk(self.temp_dir):
+            for file in files:
+                if file.endswith('.py'):
+                    rel_path = os.path.relpath(os.path.join(root, file), self.temp_dir)
+                    self.python_files.append(rel_path)
+                elif file.endswith(('.js', '.java', '.php', '.rb', '.go', '.cs', '.ts', '.jsx', '.tsx')):
+                    rel_path = os.path.relpath(os.path.join(root, file), self.temp_dir)
+                    self.other_files.append(rel_path)
+        
+        print(f"Found {len(self.python_files)} Python files, {len(self.other_files)} other language files")
         
     def _strip_comments(self, line, file_extension='.py'):
         """Strip comments from a line of code based on file extension"""
@@ -87,8 +112,14 @@ class CodeScanner:
             if not any(domain in clean_url for domain in ['github.com', 'gitlab.com', 'bitbucket.org']):
                 print(f"Warning: Unusual repository URL: {clean_url}")
             
-            Repo.clone_from(clean_url, self.temp_dir, depth=1)  # Shallow clone for faster processing
-            print(f"Successfully cloned to: {self.temp_dir}")
+            # Deep scan uses full clone (depth=None) or deeper history if needed
+            # For now, we still use depth=1 but we could change this
+            clone_depth = None if self.deep_scan else 1
+            Repo.clone_from(clean_url, self.temp_dir, depth=clone_depth) 
+            print(f"Successfully cloned to: {self.temp_dir} (Deep Scan: {self.deep_scan})")
+            
+            # Detect file types for smart scanner selection
+            self._detect_file_types()
             
             # Verify we have actual code files
             code_files = self._count_code_files()
@@ -120,7 +151,8 @@ class CodeScanner:
                 else:
                     cmd = [bandit_cmd, '-r', self.temp_dir, '-f', 'json']
                 
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                timeout_val = int(30 * self.timeout_scale)
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_val)
                 
                 if result.stdout and result.returncode in [0, 1]:  # 1 = issues found
                     data = json.loads(result.stdout)
@@ -170,7 +202,8 @@ class CodeScanner:
                 else:
                     cmd = [pylint_cmd, '--output-format=json', '--recursive=y', self.temp_dir]
                 
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                timeout_val = int(30 * self.timeout_scale)
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_val)
                 
                 if result.stdout:
                     data = json.loads(result.stdout)
@@ -197,6 +230,155 @@ class CodeScanner:
         
         print("Pylint not available, using manual analysis")
         return self._analyze_quality_manually()
+    
+    def _get_all_code_content(self):
+        """Read all code files for AI analysis"""
+        if not self.temp_dir:
+            return {}
+            
+        code_content = {}
+        # Limit total size to avoid huge payloads
+        total_size = 0
+        max_size = self.total_ai_size_limit
+        
+        for root, dirs, files in os.walk(self.temp_dir):
+            for file in files:
+                if file.endswith(('.py', '.js', '.java', '.php', '.rb', '.go', '.cs', '.txt', '.json')):
+                    file_path = os.path.join(root, file)
+                    rel_path = file_path.replace(self.temp_dir, '').lstrip('/')
+                    
+                    try:
+                        # Skip large files based on limit
+                        if os.path.getsize(file_path) > self.file_size_limit:
+                            continue
+                            
+                        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+                            if content.strip():
+                                code_content[rel_path] = content
+                                total_size += len(content)
+                                
+                        if total_size > max_size:
+                            break
+                    except Exception:
+                        continue
+            if total_size > max_size:
+                break
+                
+        return code_content
+
+    def scan_ai(self, prd_content=None):
+        """Run AI-powered code analysis"""
+        if not self.llm_analyzer.enabled:
+            print("AI analysis disabled")
+            return []
+            
+        print("Starting AI code analysis...")
+        if prd_content:
+            print("📄 PRD Document found - using for analysis context")
+
+        code_content = self._get_all_code_content()
+        
+        if not code_content:
+            print("No code content found for AI analysis")
+            return []
+            
+        print(f"Sending {len(code_content)} files to AI for analysis...")
+        issues = self.llm_analyzer.analyze_code_files(code_content, self.repo_url, prd_content=prd_content)
+        print(f"AI found {len(issues)} issues")
+        
+        # Add code snippets if missing
+        for issue in issues:
+            if 'code_snippet' not in issue:
+                issue['code_snippet'] = self._get_code_snippet(issue.get('file'), issue.get('line', 1))
+                
+        return issues
+    
+    def scan_semgrep(self):
+        """Run Semgrep static analysis for multi-language security scanning"""
+        issues = []
+        
+        try:
+            import subprocess
+            import json
+            import sys
+            
+            print("Starting Semgrep scan...")
+            
+            # Run Semgrep using python module for reliable execution
+            result = subprocess.run(
+                [
+                    sys.executable, '-m', 'semgrep',
+                    '--config=auto',  # Use Semgrep's curated rulesets
+                    '--json',         # JSON output for parsing
+                    '--quiet',        # Less verbose
+                    f'--timeout={int(60 * self.timeout_scale)}',   # Scaled timeout
+                    self.temp_dir
+                ],
+                capture_output=True,
+                text=True,
+                timeout=int(90 * self.timeout_scale)  # Overall timeout
+            )
+            
+            # Parse Semgrep output
+            if result.stdout:
+                try:
+                    data = json.loads(result.stdout)
+                    
+                    for finding in data.get('results', []):
+                        # Extract file path relative to temp_dir
+                        file_path = finding.get('path', '')
+                        if file_path.startswith(self.temp_dir):
+                            file_path = file_path[len(self.temp_dir):].lstrip('/')
+                        
+                        # Map Semgrep severity to our format
+                        semgrep_severity = finding.get('extra', {}).get('severity', 'WARNING').upper()
+                        severity_map = {
+                            'ERROR': 'HIGH',
+                            'WARNING': 'MEDIUM',
+                            'INFO': 'LOW'
+                        }
+                        severity = severity_map.get(semgrep_severity, 'MEDIUM')
+                        
+                        # Determine issue type based on Semgrep metadata
+                        metadata = finding.get('extra', {}).get('metadata', {})
+                        category = metadata.get('category', 'security')
+                        
+                        # Map to our issue types
+                        type_map = {
+                            'security': 'security',
+                            'best-practice': 'best_practice',
+                            'correctness': 'quality',
+                            'performance': 'performance',
+                            'maintainability': 'maintainability'
+                        }
+                        issue_type = type_map.get(category, 'security')
+                        
+                        issues.append({
+                            'type': issue_type,
+                            'severity': severity,
+                            'description': finding.get('extra', {}).get('message', 'Security issue detected'),
+                            'file': file_path,
+                            'line': finding.get('start', {}).get('line', 1),
+                            'column': finding.get('start', {}).get('col', 1),
+                            'code_snippet': finding.get('extra', {}).get('lines', ''),
+                            'rule_id': finding.get('check_id', 'semgrep'),
+                            'tool': 'semgrep'
+                        })
+                    
+                    print(f"Semgrep found {len(issues)} issues")
+                    
+                except json.JSONDecodeError as e:
+                    print(f"Semgrep JSON parse error: {e}")
+            
+        except subprocess.TimeoutExpired:
+            print("Semgrep scan timed out after 90 seconds")
+        except FileNotFoundError:
+            print("Semgrep not available, skipping Semgrep scan")
+        except Exception as e:
+            print(f"Semgrep scan failed: {e}")
+        
+        return issues
     
     def _analyze_security_manually(self):
         """Analyze repository for actual security issues with deduplication"""
@@ -552,6 +734,370 @@ class CodeScanner:
         # Return ALL quality issues found (no artificial limit)
         return issues
     
+    def _analyze_performance(self):
+        """Analyze repository for performance issues"""
+        issues = []
+        seen_issues = set()
+        
+        if not os.path.exists(self.temp_dir):
+            return []
+        
+        # Performance patterns
+        performance_patterns = [
+            # Inefficient loops
+            (r'for.*in.*range.*len\(', 'Inefficient iteration - use enumerate() instead', 'MEDIUM'),
+            (r'for.*for.*for', 'Triple nested loop - O(n³) complexity', 'HIGH'),
+            (r'while\s+True', 'Infinite loop - ensure proper exit condition', 'MEDIUM'),
+            
+            # String operations
+            (r'\+=\s*["\'][^"\']*["\']', 'String concatenation in loop - use join() instead', 'MEDIUM'),
+            (r'str\s*\+\s*str', 'String concatenation - consider f-strings or join()', 'LOW'),
+            
+            # List operations
+            (r'\.append.*for.*in', 'Consider list comprehension for better performance', 'LOW'),
+            (r'list\(.*filter\(', 'filter() creates extra iteration - use list comprehension', 'LOW'),
+            
+            # File operations
+            (r'open\(.*\)\.read\(\)', 'Reading entire file at once - consider streaming for large files', 'MEDIUM'),
+            (r'readlines\(\)', 'readlines() loads all lines in memory - use iteration', 'MEDIUM'),
+            
+            # Database
+            (r'for.*query\(', 'Query inside loop - N+1 query problem', 'HIGH'),
+            (r'execute.*for.*in', 'SQL execution in loop - use batch operations', 'HIGH'),
+            
+            # Memory
+            (r'\*\s+\[\]', 'Creating list copies - may cause memory issues', 'MEDIUM'),
+            (r'deepcopy', 'Deep copy is expensive - use shallow copy if possible', 'LOW'),
+            
+            # Regex
+            (r're\.(match|search|findall)\(.*,', 'Compile regex for repeated use', 'LOW'),
+            
+            # Sleep
+            (r'time\.sleep\(\d{2,}\)', 'Long sleep duration - consider async', 'MEDIUM'),
+        ]
+        
+        code_extensions = {'.py', '.js', '.java', '.php', '.rb', '.go'}
+        
+        for root, dirs, files in os.walk(self.temp_dir):
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ['node_modules', '__pycache__']]
+            
+            for file in files:
+                if any(file.endswith(ext) for ext in code_extensions):
+                    file_path = os.path.join(root, file)
+                    rel_path = os.path.relpath(file_path, self.temp_dir)
+                    
+                    try:
+                        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            for line_num, line_content in enumerate(f, 1):
+                                line_stripped = line_content.strip()
+                                if not line_stripped or line_stripped.startswith(('#', '//', '/*')):
+                                    continue
+                                
+                                for pattern, message, severity in performance_patterns:
+                                    if re.search(pattern, line_content, re.IGNORECASE):
+                                        issue_key = (rel_path, message)
+                                        if issue_key not in seen_issues:
+                                            seen_issues.add(issue_key)
+                                            issues.append({
+                                                'file': rel_path,
+                                                'line': line_num,
+                                                'severity': severity,
+                                                'issue': message,
+                                                'type': 'performance',
+                                                'code_snippet': line_content.strip()
+                                            })
+                                        break
+                    except Exception:
+                        continue
+        
+        for issue in issues:
+            issue['minimal_fix'] = self._generate_minimal_fix(issue)
+        
+        return issues
+    
+    def _analyze_maintainability(self):
+        """Analyze repository for maintainability issues"""
+        issues = []
+        seen_issues = set()
+        
+        if not os.path.exists(self.temp_dir):
+            return []
+        
+        # Maintainability patterns
+        maintainability_patterns = [
+            # Complex code
+            (r'if.*if.*if.*if', 'Deep nesting (4+ levels) - refactor into smaller functions', 'HIGH'),
+            (r'if.*else.*if.*else.*if', 'Complex conditional chain - use switch/match or lookup table', 'MEDIUM'),
+            (r'lambda.*lambda', 'Nested lambdas - use named functions for clarity', 'MEDIUM'),
+            
+            # God objects
+            (r'class.*:$', None, None),  # Track for line count check
+            
+            # Magic numbers/strings
+            (r'==\s*\d{2,}', 'Magic number in comparison - use named constant', 'MEDIUM'),
+            (r'>\s*\d{2,}', 'Magic number in condition - use named constant', 'LOW'),
+            (r'<\s*\d{2,}', 'Magic number in condition - use named constant', 'LOW'),
+            
+            # Commented code
+            (r'#.*\w+\s*=\s*\w+', 'Commented out code - remove or uncomment', 'LOW'),
+            (r'//.*\w+\s*=\s*\w+', 'Commented out code - remove or uncomment', 'LOW'),
+            
+            # Dead code patterns
+            (r'return.*\n\s+\w', 'Unreachable code after return', 'MEDIUM'),
+            
+            # Coupling
+            (r'from\s+\.\.\.\s+import', 'Deep relative import - may indicate tight coupling', 'MEDIUM'),
+            
+            # Hardcoded paths
+            (r'["\'][A-Z]:\\', 'Hardcoded Windows path - use os.path or pathlib', 'MEDIUM'),
+            (r'["\']\/home\/', 'Hardcoded Unix path - use environment variables', 'MEDIUM'),
+        ]
+        
+        code_extensions = {'.py', '.js', '.java', '.php', '.rb', '.go'}
+        
+        for root, dirs, files in os.walk(self.temp_dir):
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ['node_modules', '__pycache__']]
+            
+            for file in files:
+                if any(file.endswith(ext) for ext in code_extensions):
+                    file_path = os.path.join(root, file)
+                    rel_path = os.path.relpath(file_path, self.temp_dir)
+                    
+                    try:
+                        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            lines = f.readlines()
+                            
+                            # Check file length
+                            if len(lines) > 500:
+                                issues.append({
+                                    'file': rel_path,
+                                    'line': 1,
+                                    'severity': 'MEDIUM',
+                                    'issue': f'File too long ({len(lines)} lines) - consider splitting',
+                                    'type': 'maintainability',
+                                    'code_snippet': f'Total lines: {len(lines)}'
+                                })
+                            
+                            for line_num, line_content in enumerate(lines, 1):
+                                line_stripped = line_content.strip()
+                                if not line_stripped or line_stripped.startswith(('#', '//', '/*')):
+                                    continue
+                                
+                                for pattern, message, severity in maintainability_patterns:
+                                    if message is None:  # Skip tracking patterns
+                                        continue
+                                    if re.search(pattern, line_content, re.IGNORECASE):
+                                        issue_key = (rel_path, message)
+                                        if issue_key not in seen_issues:
+                                            seen_issues.add(issue_key)
+                                            issues.append({
+                                                'file': rel_path,
+                                                'line': line_num,
+                                                'severity': severity,
+                                                'issue': message,
+                                                'type': 'maintainability',
+                                                'code_snippet': line_content.strip()
+                                            })
+                                        break
+                    except Exception:
+                        continue
+        
+        for issue in issues:
+            issue['minimal_fix'] = self._generate_minimal_fix(issue)
+        
+        return issues
+    
+    def _analyze_best_practices(self):
+        """Analyze repository for best practice violations"""
+        issues = []
+        seen_issues = set()
+        
+        if not os.path.exists(self.temp_dir):
+            return []
+        
+        # Best practice patterns
+        best_practice_patterns = [
+            # Python specific
+            (r'except\s*:', 'Bare except clause - catch specific exceptions', 'HIGH'),
+            (r'except\s+Exception\s*:', 'Catching all exceptions - be more specific', 'MEDIUM'),
+            (r'print\s*\(.*\)', 'Print statement in production code - use logging', 'LOW'),
+            (r'def\s+\w+\(.*=\s*\[\]', 'Mutable default argument - use None instead', 'HIGH'),
+            (r'def\s+\w+\(.*=\s*\{\}', 'Mutable default argument - use None instead', 'HIGH'),
+            (r'global\s+\w+', 'Global variable usage - avoid globals', 'MEDIUM'),
+            
+            # Type hints (Python)
+            (r'def\s+\w+\([^)]*\)\s*:', 'Missing return type hint', 'LOW'),
+            
+            # Error handling
+            (r'pass\s*$', 'Empty block - add implementation or explicit comment', 'LOW'),
+            (r'raise\s+Exception\(', 'Raising generic Exception - use specific exception', 'MEDIUM'),
+            
+            # Comparisons
+            (r'==\s*True', 'Redundant comparison to True - use if condition directly', 'LOW'),
+            (r'==\s*False', 'Comparison to False - use if not condition', 'LOW'),
+            (r'==\s*None', 'Use is None instead of == None', 'MEDIUM'),
+            (r'!=\s*None', 'Use is not None instead of != None', 'MEDIUM'),
+            
+            # Imports
+            (r'from\s+\w+\s+import\s+\*', 'Wildcard import - import specific names', 'MEDIUM'),
+            (r'import\s+os,\s*sys', 'Multiple imports on one line - split into separate lines', 'LOW'),
+            
+            # String formatting
+            (r'%\s*\(', 'Old-style string formatting - use f-strings', 'LOW'),
+            (r'\.format\(', 'format() method - prefer f-strings in Python 3.6+', 'LOW'),
+            
+            # Assertions
+            (r'assert\s+.*,', 'Assert with message in production - may be disabled', 'MEDIUM'),
+        ]
+        
+        code_extensions = {'.py', '.js', '.java', '.php', '.rb', '.go'}
+        
+        for root, dirs, files in os.walk(self.temp_dir):
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ['node_modules', '__pycache__']]
+            
+            for file in files:
+                if any(file.endswith(ext) for ext in code_extensions):
+                    file_path = os.path.join(root, file)
+                    rel_path = os.path.relpath(file_path, self.temp_dir)
+                    
+                    try:
+                        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            for line_num, line_content in enumerate(f, 1):
+                                line_stripped = line_content.strip()
+                                if not line_stripped or line_stripped.startswith(('#', '//', '/*')):
+                                    continue
+                                
+                                for pattern, message, severity in best_practice_patterns:
+                                    if re.search(pattern, line_content, re.IGNORECASE):
+                                        issue_key = (rel_path, message)
+                                        if issue_key not in seen_issues:
+                                            seen_issues.add(issue_key)
+                                            issues.append({
+                                                'file': rel_path,
+                                                'line': line_num,
+                                                'severity': severity,
+                                                'issue': message,
+                                                'type': 'best_practice',
+                                                'code_snippet': line_content.strip()
+                                            })
+                                        break
+                    except Exception:
+                        continue
+        
+        for issue in issues:
+            issue['minimal_fix'] = self._generate_minimal_fix(issue)
+        
+        return issues
+    
+    def _analyze_documentation(self):
+        """Analyze repository for documentation issues"""
+        issues = []
+        seen_issues = set()
+        
+        if not os.path.exists(self.temp_dir):
+            return []
+        
+        for root, dirs, files in os.walk(self.temp_dir):
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ['node_modules', '__pycache__']]
+            
+            for file in files:
+                if file.endswith('.py'):
+                    file_path = os.path.join(root, file)
+                    rel_path = os.path.relpath(file_path, self.temp_dir)
+                    
+                    try:
+                        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+                            lines = content.split('\n')
+                            
+                            in_function = False
+                            function_line = 0
+                            function_name = ""
+                            has_docstring = False
+                            
+                            for line_num, line in enumerate(lines, 1):
+                                line_stripped = line.strip()
+                                
+                                # Check for function/method definition
+                                if re.match(r'def\s+(\w+)\s*\(', line_stripped):
+                                    # Check previous function for docstring
+                                    if in_function and not has_docstring and function_name:
+                                        issue_key = (rel_path, f'Missing docstring for {function_name}')
+                                        if issue_key not in seen_issues:
+                                            seen_issues.add(issue_key)
+                                            issues.append({
+                                                'file': rel_path,
+                                                'line': function_line,
+                                                'severity': 'LOW',
+                                                'issue': f'Missing docstring for function {function_name}',
+                                                'type': 'documentation',
+                                                'code_snippet': f'def {function_name}(...)'
+                                            })
+                                    
+                                    # Start tracking new function
+                                    match = re.match(r'def\s+(\w+)\s*\(', line_stripped)
+                                    function_name = match.group(1) if match else ""
+                                    function_line = line_num
+                                    in_function = True
+                                    has_docstring = False
+                                
+                                # Check for class definition
+                                elif re.match(r'class\s+(\w+)', line_stripped):
+                                    match = re.match(r'class\s+(\w+)', line_stripped)
+                                    class_name = match.group(1) if match else ""
+                                    # Check next few lines for docstring
+                                    next_lines = '\n'.join(lines[line_num:line_num+3])
+                                    if '"""' not in next_lines and "'''" not in next_lines:
+                                        issue_key = (rel_path, f'Missing docstring for class {class_name}')
+                                        if issue_key not in seen_issues:
+                                            seen_issues.add(issue_key)
+                                            issues.append({
+                                                'file': rel_path,
+                                                'line': line_num,
+                                                'severity': 'MEDIUM',
+                                                'issue': f'Missing docstring for class {class_name}',
+                                                'type': 'documentation',
+                                                'code_snippet': f'class {class_name}:'
+                                            })
+                                
+                                # Check if next line has docstring
+                                elif in_function and ('"""' in line_stripped or "'''" in line_stripped):
+                                    has_docstring = True
+                                
+                                # Check for TODO/FIXME
+                                if 'TODO' in line.upper():
+                                    issue_key = (rel_path, line_num, 'TODO')
+                                    if issue_key not in seen_issues:
+                                        seen_issues.add(issue_key)
+                                        issues.append({
+                                            'file': rel_path,
+                                            'line': line_num,
+                                            'severity': 'LOW',
+                                            'issue': 'TODO comment found - address before release',
+                                            'type': 'documentation',
+                                            'code_snippet': line_stripped[:80]
+                                        })
+                                
+                                if 'FIXME' in line.upper():
+                                    issue_key = (rel_path, line_num, 'FIXME')
+                                    if issue_key not in seen_issues:
+                                        seen_issues.add(issue_key)
+                                        issues.append({
+                                            'file': rel_path,
+                                            'line': line_num,
+                                            'severity': 'MEDIUM',
+                                            'issue': 'FIXME comment found - fix before release',
+                                            'type': 'documentation',
+                                            'code_snippet': line_stripped[:80]
+                                        })
+                    except Exception:
+                        continue
+        
+        for issue in issues:
+            issue['minimal_fix'] = self._generate_minimal_fix(issue)
+        
+        return issues
+
 
     
     def _count_code_files(self):
@@ -560,17 +1106,38 @@ class CodeScanner:
             return 0
             
         count = 0
-        code_extensions = {'.py', '.js', '.java', '.php', '.rb', '.go', '.cs', '.cpp', '.c', '.ts'}
         
         for root, dirs, files in os.walk(self.temp_dir):
             # Skip hidden and build directories
-            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ['node_modules', '__pycache__', 'build', 'dist']]
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in self.IGNORED_DIRS]
             
             for file in files:
-                if any(file.endswith(ext) for ext in code_extensions):
+                if any(file.endswith(ext) for ext in self.CODE_EXTENSIONS):
                     count += 1
                     
         return count
+
+    def get_scan_statistics(self):
+        """Count total files and directories scanned"""
+        if not self.temp_dir or not os.path.exists(self.temp_dir):
+            return {'files': 0, 'directories': 0}
+            
+        total_files = 0
+        total_dirs = 0
+        
+        for root, dirs, files in os.walk(self.temp_dir):
+            # Same filtering logic as other methods
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in self.IGNORED_DIRS]
+            total_dirs += len(dirs)
+            
+            # Count only visible files
+            files = [f for f in files if not f.startswith('.')]
+            total_files += len(files)
+            
+        return {
+            'files_scanned': total_files,
+            'directories_scanned': total_dirs
+        }
     
     def get_repository_files(self):
         """Get list of all files in the repository"""
@@ -580,7 +1147,7 @@ class CodeScanner:
         files = []
         for root, dirs, filenames in os.walk(self.temp_dir):
             # Skip hidden directories and common build directories
-            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ['node_modules', '__pycache__', 'build', 'dist']]
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in self.IGNORED_DIRS]
             
             for filename in filenames:
                 if not filename.startswith('.'):
