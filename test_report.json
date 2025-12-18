@@ -1,0 +1,6 @@
+{
+    "total_tests": 10,
+        "passed": 8,
+            "failed": 2,
+                "scan_duration": 1.5
+}
