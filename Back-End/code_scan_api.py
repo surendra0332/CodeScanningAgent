@@ -474,7 +474,6 @@ def get_scan_report(job_id: str):
         'documentation_issues': job.get('documentation_issues', 0),
         'files_scanned': job.get('files_scanned', 0),
         'directories_scanned': job.get('directories_scanned', 0),
-        'directories_scanned': job.get('directories_scanned', 0),
         'scan_duration': job.get('scan_duration', 'N/A'),
         'scan_mode': job.get('scan_mode', 'standard'),
         'issues': job.get('issues', []),

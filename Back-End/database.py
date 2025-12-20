@@ -9,7 +9,7 @@ class ScanDatabase:
         self.init_database()
     
     def init_database(self):
-        """Initialize database tables"""
+        """Initialize database tables and run migrations"""
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS scans (
@@ -20,6 +20,8 @@ class ScanDatabase:
                     total_issues INTEGER DEFAULT 0,
                     security_issues INTEGER DEFAULT 0,
                     quality_issues INTEGER DEFAULT 0,
+                    files_scanned INTEGER DEFAULT 0,
+                    directories_scanned INTEGER DEFAULT 0,
                     issues TEXT,
                     unit_test_report TEXT,
                     created_at TEXT NOT NULL,
@@ -27,6 +29,19 @@ class ScanDatabase:
                     completed_at TEXT
                 )
             """)
+            
+            # Migration: Check for missing columns
+            cursor = conn.execute("PRAGMA table_info(scans)")
+            columns = [info[1] for info in cursor.fetchall()]
+            
+            if 'files_scanned' not in columns:
+                print("Adding missing column 'files_scanned' to scans table...")
+                conn.execute("ALTER TABLE scans ADD COLUMN files_scanned INTEGER DEFAULT 0")
+            
+            if 'directories_scanned' not in columns:
+                print("Adding missing column 'directories_scanned' to scans table...")
+                conn.execute("ALTER TABLE scans ADD COLUMN directories_scanned INTEGER DEFAULT 0")
+                
             conn.commit()
     
     def save_scan(self, scan_data: Dict) -> bool:
@@ -36,8 +51,9 @@ class ScanDatabase:
                 conn.execute("""
                     INSERT OR REPLACE INTO scans 
                     (job_id, repo_url, status, total_issues, security_issues, quality_issues, 
-                     issues, unit_test_report, created_at, updated_at, completed_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     files_scanned, directories_scanned, issues, unit_test_report, 
+                     created_at, updated_at, completed_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     scan_data['job_id'],
                     scan_data['repo_url'],
@@ -45,6 +61,8 @@ class ScanDatabase:
                     scan_data.get('total_issues', 0),
                     scan_data.get('security_issues', 0),
                     scan_data.get('quality_issues', 0),
+                    scan_data.get('files_scanned', 0),
+                    scan_data.get('directories_scanned', 0),
                     json.dumps(scan_data.get('issues', [])),
                     json.dumps(scan_data.get('unit_test_report')) if scan_data.get('unit_test_report') else None,
                     scan_data['created_at'],
@@ -81,7 +99,8 @@ class ScanDatabase:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.execute("""
                     SELECT job_id, repo_url, status, total_issues, security_issues, 
-                           quality_issues, created_at, completed_at 
+                           quality_issues, files_scanned, directories_scanned,
+                           created_at, completed_at 
                     FROM scans 
                     ORDER BY created_at DESC 
                     LIMIT ?
@@ -98,7 +117,8 @@ class ScanDatabase:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.execute("""
                     SELECT job_id, status, total_issues, security_issues, 
-                           quality_issues, created_at, completed_at 
+                           quality_issues, files_scanned, directories_scanned,
+                           created_at, completed_at 
                     FROM scans 
                     WHERE repo_url = ? 
                     ORDER BY created_at DESC
