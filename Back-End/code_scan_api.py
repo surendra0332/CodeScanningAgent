@@ -13,7 +13,13 @@ from io import BytesIO
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 import uvicorn
-from pydantic import BaseModel, Field # Added Field here as it's used later
+from pydantic import BaseModel, Field
+
+# FIX: Add current directory to sys.path to allow importing sibling modules (scanner, database, etc.)
+# This is required because 'Back-End' has a hyphen (invalid package name) and Render runs from root.
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # Internal imports
 from scanner import CodeScanner
