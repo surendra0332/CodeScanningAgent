@@ -91,7 +91,10 @@ class ScanDatabase:
                 conn.commit()
                 return user_id
         except Exception as e:
-            print(f"Error creating user: {e}")
+            print(f"🔥 DATABASE CREATION ERROR: {str(e)}") # Critical Debug
+            print(f"🔍 Error Type: {type(e)}")
+            import traceback
+            traceback.print_exc()
             return None
 
     def get_user_by_email(self, email: str) -> Optional[Dict]:
