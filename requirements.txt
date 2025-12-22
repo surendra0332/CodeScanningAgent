@@ -1,8 +1,8 @@
 # Core Web Framework
-fastapi==0.104.1
+fastapi>=0.110.0
 uvicorn==0.24.0
 python-multipart==0.0.6
-pydantic==2.5.0
+pydantic>=2.10.0
 
 # HTTP & Networking
 requests==2.31.0
@@ -14,7 +14,7 @@ gitpython==3.1.37
 python-dotenv==1.0.0
 
 # Database
-psycopg2-binary==2.9.9
+psycopg[binary]==3.3.2
 
 # Authentication & Security
 passlib==1.7.4

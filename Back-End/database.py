@@ -1,5 +1,5 @@
-import psycopg2
-from psycopg2.extras import RealDictCursor
+import psycopg
+from psycopg.rows import dict_row
 import json
 import os
 from datetime import datetime
@@ -7,14 +7,16 @@ from typing import List, Dict, Optional
 
 class ScanDatabase:
     def __init__(self, db_url: str = None):
-        self.db_url = db_url or os.getenv("DATABASE_URL")
+        # Env variable OR Default Local Postgres URL
+        self.db_url = db_url or os.getenv("DATABASE_URL") or "postgresql://surendrawork@localhost:5432/code_scanner"
+        
         if not self.db_url:
             print("WARNING: DATABASE_URL not found. PostgreSQL connection will fail.")
         self.init_database()
     
     def get_connection(self):
         """Standard connection for PostgreSQL"""
-        return psycopg2.connect(self.db_url)
+        return psycopg.connect(self.db_url, autocommit=True)
 
     def init_database(self):
         """Initialize PostgreSQL tables"""
@@ -96,7 +98,7 @@ class ScanDatabase:
         """Get user by email"""
         try:
             with self.get_connection() as conn:
-                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                with conn.cursor(row_factory=dict_row) as cur:
                     cur.execute("SELECT * FROM users WHERE email = %s", (email,))
                     return cur.fetchone()
         except Exception as e:
@@ -107,7 +109,7 @@ class ScanDatabase:
         """Get user by ID"""
         try:
             with self.get_connection() as conn:
-                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                with conn.cursor(row_factory=dict_row) as cur:
                     cur.execute("SELECT * FROM users WHERE id = %s", (user_id,))
                     return cur.fetchone()
         except Exception as e:
@@ -177,7 +179,7 @@ class ScanDatabase:
         """Get scan by job_id from PostgreSQL (optionally filtered by user_id)"""
         try:
             with self.get_connection() as conn:
-                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                with conn.cursor(row_factory=dict_row) as cur:
                     if user_id:
                         cur.execute("SELECT * FROM scans WHERE job_id = %s AND user_id = %s", (job_id, user_id))
                     else:
@@ -197,7 +199,7 @@ class ScanDatabase:
         """Get all scans for a specific user from PostgreSQL"""
         try:
             with self.get_connection() as conn:
-                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                with conn.cursor(row_factory=dict_row) as cur:
                     cur.execute("""
                         SELECT job_id, repo_url, status, total_issues, security_issues, 
                                quality_issues, files_scanned, directories_scanned,
@@ -216,7 +218,7 @@ class ScanDatabase:
         """Get scan history for specific repository and user from PostgreSQL"""
         try:
             with self.get_connection() as conn:
-                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                with conn.cursor(row_factory=dict_row) as cur:
                     cur.execute("""
                         SELECT job_id, status, total_issues, security_issues, 
                                quality_issues, files_scanned, directories_scanned,
