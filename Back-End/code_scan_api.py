@@ -1299,24 +1299,11 @@ def download_docx(job_id: str, view: bool = False, current_user: Optional[dict] 
 
 
 
-# Serve static files from Front-End directory
-frontend_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Front-End')
-app.mount("/static", StaticFiles(directory=frontend_dir), name="static")
-
+# Frontend serving logic removed for separate deployment (Vercel + Render)
+# The root "/" route will now just return a simple API status message
 @app.get("/")
-def serve_frontend():
-    """Serve the main frontend page"""
-    return FileResponse(os.path.join(frontend_dir, 'index.html'))
-
-@app.get("/styles.css")
-def serve_css():
-    """Serve CSS file"""
-    return FileResponse(os.path.join(frontend_dir, 'styles.css'))
-
-@app.get("/script.js")
-def serve_js():
-    """Serve JavaScript file"""
-    return FileResponse(os.path.join(frontend_dir, 'script.js'))
+def api_root():
+    return {"status": "ok", "service": "Code Scanner API", "docs_url": "/docs"}
 
 @app.get("/api.js")
 def serve_api_js():
