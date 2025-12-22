@@ -118,6 +118,16 @@ async def get_optional_current_user(token: str = Depends(oauth2_scheme)):
         return None
 
 
+
+# Manual DB Init Endpoint (For debugging Render deployment)
+@app.get("/api/admin/init-db")
+def manual_db_init():
+    try:
+        db.init_database()
+        return {"status": "success", "message": "Database tables created successfully"}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
+
 # Allow access if no token is provided (for guest mode)
 async def get_current_user_or_guest(request: Request):
     # 1. Try Authorization Header
