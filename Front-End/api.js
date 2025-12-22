@@ -1,6 +1,6 @@
 class ApiService {
     constructor(baseUrl = '/api') {
-        const PRODUCTION_BACKEND_URL = 'https://YOUR_RENDER_APP_URL.onrender.com/api'; // user to replace this
+        const PRODUCTION_BACKEND_URL = 'https://code-scanner-backend.onrender.com/api'; // user to replace this
 
         // If running on localhost/127.0.0.1, assume decoupled local dev
         const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
