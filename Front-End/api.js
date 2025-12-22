@@ -1,12 +1,22 @@
 class ApiService {
     constructor(baseUrl = '/api') {
-        // If running separately (e.g. frontend on 8000, backend on 8001),
-        // we need to point to the absolute backend URL.
-        if (window.location.port && window.location.port !== '8001' && baseUrl.startsWith('/')) {
-            this.baseUrl = `http://${window.location.hostname}:8001${baseUrl}`;
-            console.log(`📡 Decoupled Mode: Connecting to backend at ${this.baseUrl}`);
+        const PRODUCTION_BACKEND_URL = 'https://YOUR_RENDER_APP_URL.onrender.com/api'; // user to replace this
+
+        // If running on localhost/127.0.0.1, assume decoupled local dev
+        const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+
+        if (isLocal) {
+            // Local Development: Point to Backend Port 8001
+            if (window.location.port !== '8001') {
+                this.baseUrl = `http://${window.location.hostname}:8001${baseUrl}`;
+                console.log(`📡 Local Dev Mode: Connected to ${this.baseUrl}`);
+            } else {
+                this.baseUrl = baseUrl;
+            }
         } else {
-            this.baseUrl = baseUrl;
+            // Production (Vercel): Use the Render URL
+            this.baseUrl = PRODUCTION_BACKEND_URL;
+            console.log(`🚀 Production Mode: Connected to ${this.baseUrl}`);
         }
     }
 
