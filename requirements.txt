@@ -16,9 +16,6 @@ python-dotenv==1.0.0
 # Database
 psycopg2-binary==2.9.9
 
-# Server
-gunicorn==21.2.0
-
 # Authentication & Security
 passlib==1.7.4
 bcrypt==3.2.2
