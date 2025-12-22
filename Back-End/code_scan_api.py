@@ -1,29 +1,40 @@
-from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Depends
-from fpdf import FPDF
+from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Depends, Request, Response
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fpdf import FPDF
 import uuid
 import shutil
 import threading
+import os
+import json
+from io import BytesIO
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 import uvicorn
-from pydantic import BaseModel
+from pydantic import BaseModel, Field # Added Field here as it's used later
+
+# Internal imports
 from scanner import CodeScanner
 from database import ScanDatabase
 from report_generator import generate_report_for_scan
 from unit_test_validator import UnitTestReportValidator
-import os
-import json
+from auth import verify_password, get_password_hash, create_access_token, decode_access_token
 
-# Optional environment loading
+# Optional requirements
 try:
-    from dotenv import load_dotenv  # type: ignore
+    from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
     pass
+
+try:
+    from docx import Document
+    from docx.shared import Inches, Pt, RGBColor
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+except ImportError:
+    Document = None
 
 app = FastAPI(title="Code Scanning API", version="1.0.0")
 
@@ -36,6 +47,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    print(f"Global exception: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal Server Error: {str(exc)}"},
+    )
+
 # Database for persistent storage
 db = ScanDatabase()
 
@@ -43,6 +62,81 @@ db = ScanDatabase()
 scan_jobs = {}
 
 
+
+# OAuth2 configuration
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/auth/login")
+
+
+class UserBase(BaseModel):
+    email: str
+    full_name: Optional[str] = None
+
+class UserCreate(UserBase):
+    password: str = Field(..., min_length=4, description="Password must be at least 4 characters")
+
+class UserResponse(UserBase):
+    id: int
+    created_at: Any
+
+    class Config:
+        from_attributes = True
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+# Dependency to get current user
+async def get_current_user(token: str = Depends(oauth2_scheme)):
+    payload = decode_access_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    
+    email = payload.get("sub")
+    if not email:
+        raise HTTPException(status_code=401, detail="Invalid token payload")
+    
+    user = db.get_user_by_email(email)
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    
+    return user
+
+# Dependency to get current user (Optional)
+async def get_optional_current_user(token: str = Depends(oauth2_scheme)):
+    try:
+        return await get_current_user(token)
+    except HTTPException:
+        return None
+
+
+# Allow access if no token is provided (for guest mode)
+async def get_current_user_or_guest(request: Request):
+    # 1. Try Authorization Header
+    auth_header = request.headers.get('Authorization')
+    token = None
+    
+    if auth_header:
+        try:
+            scheme, token = auth_header.split()
+            if scheme.lower() != 'bearer':
+                token = None
+        except Exception:
+            token = None
+            
+    # 2. Try Query Parameter (useful for direct links/downloads)
+    if not token:
+        token = request.query_params.get('token')
+        
+    if not token:
+        return None  # Guest
+    
+    try:
+        return await get_current_user(token)
+    except Exception:
+        # If token was provided but invalid, we could either return None (treat as guest)
+        # or raise 401. Treating as guest is safer for public access, 
+        # but the security checks in endpoints will catch if the job belongs to someone.
+        return None
 
 # Initialize unit test validator
 unit_test_validator = UnitTestReportValidator()
@@ -301,14 +395,61 @@ def run_scan(job_id, repo_url, deep_scan=False):
     finally:
         scanner.cleanup()
 
+# --- Auth Endpoints ---
+
+@app.post("/api/auth/register", response_model=UserResponse)
+def register(user: UserCreate):
+    """Register a new user"""
+    db_user = db.get_user_by_email(user.email)
+    if db_user:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    hashed_password = get_password_hash(user.password)
+    user_id = db.create_user({
+        "email": user.email,
+        "hashed_password": hashed_password,
+        "full_name": user.full_name
+    })
+    
+    if not user_id:
+        raise HTTPException(status_code=500, detail="Failed to create user")
+        
+    return db.get_user_by_id(user_id)
+
+@app.post("/api/auth/login", response_model=Token)
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    """Authenticate user and return JWT token with automatic hash migration"""
+    user = db.get_user_by_email(form_data.username)
+    if not user or not verify_password(form_data.password, user['hashed_password']):
+        raise HTTPException(status_code=401, detail="Incorrect email or password")
+    
+    # Check if password needs upgrading (e.g. from bcrypt to pbkdf2_sha256)
+    from auth import needs_upgrade, get_password_hash
+    if needs_upgrade(user['hashed_password']):
+        print(f"🔄 Migrating password hash for user {user['email']}...")
+        new_hash = get_password_hash(form_data.password)
+        db.update_user_password(user['id'], new_hash)
+        print(f"✅ Password hash migrated successfully")
+
+    access_token = create_access_token(data={"sub": user['email']})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@app.get("/api/auth/me", response_model=UserResponse)
+async def get_me(current_user: dict = Depends(get_current_user)):
+    """Get current user info"""
+    return current_user
+
+# --- API Endpoints ---
+
 @app.post('/api/scan')
 def start_scan(
     repo_url: str = Form(...),
     unit_test_report: UploadFile = File(..., description="Unit test report JSON file (Required)"),
     prd_document: Optional[UploadFile] = File(None, description="Optional PRD document to guide analysis"),
-    deep_scan: bool = Form(False)
+    deep_scan: bool = Form(False),
+    current_user: Optional[dict] = Depends(get_current_user_or_guest)
 ):
-    """Start a new code scan"""
+    """Start a new code scan (Public/Guest access allowed)"""
     job_id = str(uuid.uuid4())
     
     # Validate repository URL
@@ -381,13 +522,16 @@ def start_scan(
         except Exception as e:
             print(f"⚠️ Failed to read PRD document: {e}")
 
-    # Create job entry
+    # Create job entry (user_id is None for guests)
+    user_id = current_user['id'] if current_user else None
+    
     scan_jobs[job_id] = {
         'job_id': job_id,
         'repo_url': repo_url,
         'unit_test_report': test_report_data,
         'prd_content': prd_content,
         'deep_scan': deep_scan,
+        'user_id': user_id, 
         'status': 'queued',
         'created_at': datetime.now().isoformat(),
         'updated_at': datetime.now().isoformat()
@@ -399,7 +543,7 @@ def start_scan(
     except Exception as db_error:
         print(f"Database save error for initial job {job_id}: {db_error}")
     
-    print(f"Scan job created successfully: {job_id} for {repo_url}")
+    print(f"Scan job created successfully: {job_id} for {repo_url} (User: {user_id})")
     
     # Start background scan
     thread = threading.Thread(target=run_scan, args=(job_id, repo_url, deep_scan))
@@ -411,20 +555,43 @@ def start_scan(
         'status': 'queued',
         'message': 'Scan started successfully with validated unit test report',
         'unit_test_report_validated': True,
-        'repository_url': repo_url
+        'repository_url': repo_url,
+        'is_guest': user_id is None
     }
     print(f"Returning response: {response_data}")
     return response_data
 
 @app.get('/api/scan/{job_id}')
-def get_scan_status(job_id: str):
-    """Get scan status"""
+def get_scan_status(job_id: str, current_user: Optional[dict] = Depends(get_current_user_or_guest)):
+    """Get scan status (Public access allowed for same-user or guest jobs)"""
     job_id = job_id.strip()
     
     # Check in-memory first, then database
-    job = scan_jobs.get(job_id) or db.get_scan(job_id)
+    job = scan_jobs.get(job_id)
+    
+    # Security check: 
+    # 1. If job has user_id, current_user MUST match
+    # 2. If job has NO user_id (guest), anyone can view (or restrict to session if we had it, but for now public)
+    if job and job.get('user_id'):
+        if not current_user or job.get('user_id') != current_user['id']:
+             raise HTTPException(status_code=403, detail="Access denied: This scan report belongs to another user.")
+    
+    if not job:
+        # If fetching from DB, we need to apply same security logic
+        # But get_scan method filters by user_id if provided.
+        # Here we manually fetch and check.
+        job_from_db = db.get_scan(job_id) # Get raw without filtering first
+        if not job_from_db:
+             raise HTTPException(status_code=404, detail='Job not found')
+             
+        if job_from_db.get('user_id'):
+             if not current_user or job_from_db.get('user_id') != current_user['id']:
+                 raise HTTPException(status_code=403, detail="Access denied: This scan report belongs to another user.")
+        job = job_from_db
+    
     if not job:
         raise HTTPException(status_code=404, detail='Job not found')
+        
     response = {
         'job_id': job_id,
         'status': job['status'],
@@ -447,12 +614,28 @@ def get_scan_status(job_id: str):
     return response
 
 @app.get('/api/scan/{job_id}/report')
-def get_scan_report(job_id: str):
+def get_scan_report(job_id: str, current_user: Optional[dict] = Depends(get_current_user_or_guest)):
     """Get detailed scan report"""
     job_id = job_id.strip()
     
-    # Check in-memory first, then database
-    job = scan_jobs.get(job_id) or db.get_scan(job_id)
+    # Check in-memory first
+    job = scan_jobs.get(job_id)
+    
+    # Security Check
+    if job and job.get('user_id'):
+         if not current_user or job.get('user_id') != current_user['id']:
+             raise HTTPException(status_code=403, detail="Access denied: This scan report belongs to another user.")
+             
+    if not job:
+        job_from_db = db.get_scan(job_id)
+        if not job_from_db:
+             raise HTTPException(status_code=404, detail='Job not found')
+             
+        if job_from_db.get('user_id'):
+             if not current_user or job_from_db.get('user_id') != current_user['id']:
+                 raise HTTPException(status_code=403, detail="Access denied: This scan report belongs to another user.")
+        job = job_from_db
+        
     if not job:
         raise HTTPException(status_code=404, detail='Job not found')
     
@@ -494,9 +677,9 @@ def get_scan_report(job_id: str):
     return base_report
 
 @app.get('/api/scans')
-def list_scans():
-    """List all scans from database"""
-    scans = db.get_all_scans()
+def list_scans(current_user: dict = Depends(get_current_user)):
+    """List all scans from database for current user (Requires Login)"""
+    scans = db.get_all_scans(user_id=current_user['id'])
     return {'scans': scans}
 
 @app.get('/api/health')
@@ -509,12 +692,18 @@ def health_check():
     }
 
 @app.delete('/api/scan/{job_id}')
-def delete_scan(job_id: str):
-    """Delete a scan by job ID"""
+def delete_scan(job_id: str, current_user: dict = Depends(get_current_user)):
+    """Delete a scan by job ID (Requires Login)"""
     job_id = job_id.strip()
     
     # Check if scan exists in memory or database
-    job = scan_jobs.get(job_id) or db.get_scan(job_id)
+    job = scan_jobs.get(job_id)
+    if job and job.get('user_id') != current_user['id']:
+        job = None
+        
+    if not job:
+        job = db.get_scan(job_id, user_id=current_user['id'])
+        
     if not job:
         raise HTTPException(status_code=404, detail='Job not found')
     
@@ -523,7 +712,7 @@ def delete_scan(job_id: str):
         del scan_jobs[job_id]
     
     # Delete from database
-    success = db.delete_scan(job_id)
+    success = db.delete_scan(job_id, user_id=current_user['id'])
     
     if not success:
         raise HTTPException(status_code=500, detail='Failed to delete scan from database')
@@ -533,13 +722,46 @@ def delete_scan(job_id: str):
         'message': f'Scan {job_id} deleted successfully'
     }
 
+@app.delete('/api/scans/clear')
+def clear_all_scans(current_user: dict = Depends(get_current_user)):
+    """Clear all scans from database and memory for current user (Requires Login)"""
+    # Clear in-memory storage for this user's scans
+    jobs_to_delete = [jid for jid, j in scan_jobs.items() if j.get('user_id') == current_user['id']]
+    for jid in jobs_to_delete:
+        del scan_jobs[jid]
+    
+    # Clear database
+    success = db.clear_all_scans(user_id=current_user['id'])
+    
+    if not success:
+        raise HTTPException(status_code=500, detail='Failed to clear all scans from database')
+    
+    return {
+        'success': True,
+        'message': 'All scan data cleared successfully'
+    }
+
 # WORKING DOWNLOAD ENDPOINTS
 @app.get('/api/download/{job_id}/json')
-def download_json(job_id: str, view: bool = False):
-    """Download JSON report"""
-    job = scan_jobs.get(job_id) or db.get_scan(job_id)
+def download_json(job_id: str, view: bool = False, current_user: Optional[dict] = Depends(get_current_user_or_guest)):
+    """Download JSON report (Public allowed)"""
+    # Try logic similar to get_scan_report...
+    job = scan_jobs.get(job_id)
+    
+    if job and job.get('user_id'):
+         if not current_user or job.get('user_id') != current_user['id']:
+             raise HTTPException(status_code=403, detail="Access denied: You don't have permission to download this report.")
+    
     if not job:
-        raise HTTPException(status_code=404, detail='Job not found')
+        job_from_db = db.get_scan(job_id)
+        if not job_from_db:
+             raise HTTPException(status_code=404, detail='Job not found')
+        
+        if job_from_db.get('user_id'):
+             if not current_user or job_from_db.get('user_id') != current_user['id']:
+                 raise HTTPException(status_code=403, detail="Access denied: You don't have permission to download this report.")
+        job = job_from_db
+        
     if job['status'] != 'completed':
         raise HTTPException(status_code=400, detail='Scan not completed yet')
     
@@ -570,11 +792,24 @@ def download_json(job_id: str, view: bool = False):
     )
 
 @app.get('/api/download/{job_id}/pdf')
-def download_pdf(job_id: str, view: bool = False):
-    """Download comprehensive PDF report"""
-    job = scan_jobs.get(job_id) or db.get_scan(job_id)
+def download_pdf(job_id: str, view: bool = False, current_user: Optional[dict] = Depends(get_current_user_or_guest)):
+    """Download comprehensive PDF report (Public allowed)"""
+    job = scan_jobs.get(job_id)
+    
+    if job and job.get('user_id'):
+         if not current_user or job.get('user_id') != current_user['id']:
+             raise HTTPException(status_code=403, detail="Access denied: You don't have permission to download this report.")
+             
     if not job:
-        raise HTTPException(status_code=404, detail='Job not found')
+        job_from_db = db.get_scan(job_id)
+        if not job_from_db:
+            raise HTTPException(status_code=404, detail='Job not found')
+            
+        if job_from_db.get('user_id'):
+             if not current_user or job_from_db.get('user_id') != current_user['id']:
+                 raise HTTPException(status_code=403, detail="Access denied: You don't have permission to download this report.")
+        job = job_from_db
+
     if job['status'] != 'completed':
         raise HTTPException(status_code=400, detail='Scan not completed yet')
     
@@ -685,11 +920,23 @@ def download_pdf(job_id: str, view: bool = False):
         raise HTTPException(status_code=500, detail=f"Failed to generate PDF: {str(e)}")
 
 @app.get('/api/download/{job_id}/txt')
-def download_txt(job_id: str, view: bool = False):
-    """Download comprehensive text report"""
-    job = scan_jobs.get(job_id) or db.get_scan(job_id)
+def download_txt(job_id: str, view: bool = False, current_user: Optional[dict] = Depends(get_current_user_or_guest)):
+    """Download comprehensive text report (Public allowed)"""
+    job = scan_jobs.get(job_id)
+    
+    if job and job.get('user_id'):
+         if not current_user or job.get('user_id') != current_user['id']:
+             raise HTTPException(status_code=403, detail="Access denied: You don't have permission to download this report.")
+             
     if not job:
-        raise HTTPException(status_code=404, detail='Job not found')
+        job_from_db = db.get_scan(job_id)
+        if not job_from_db:
+             raise HTTPException(status_code=404, detail='Job not found')
+             
+        if job_from_db.get('user_id'):
+             if not current_user or job_from_db.get('user_id') != current_user['id']:
+                 raise HTTPException(status_code=403, detail="Access denied: You don't have permission to download this report.")
+        job = job_from_db
     if job['status'] != 'completed':
         raise HTTPException(status_code=400, detail='Scan not completed yet')
     
@@ -851,10 +1098,195 @@ DETAILED ISSUES
     return Response(
         content=content,
         media_type='text/plain',
-        headers={"Content-Disposition": disposition}
     )
 
+@app.get('/api/download/{job_id}/docx')
+def download_docx(job_id: str, view: bool = False, current_user: Optional[dict] = Depends(get_current_user_or_guest)):
+    """Download or view comprehensive DOCX report (Public allowed)"""
+    if Document is None:
+        raise HTTPException(status_code=500, detail="python-docx library not installed")
 
+    job = scan_jobs.get(job_id)
+    
+    if job and job.get('user_id'):
+         if not current_user or job.get('user_id') != current_user['id']:
+             raise HTTPException(status_code=403, detail="Access denied: You don't have permission to download this report.")
+             
+    if not job:
+        job_from_db = db.get_scan(job_id)
+        if not job_from_db:
+             raise HTTPException(status_code=404, detail='Job not found')
+             
+        if job_from_db.get('user_id'):
+             if not current_user or job_from_db.get('user_id') != current_user['id']:
+                 raise HTTPException(status_code=403, detail="Access denied: You don't have permission to download this report.")
+        job = job_from_db
+
+    if job['status'] != 'completed':
+        raise HTTPException(status_code=400, detail='Scan not completed yet')
+    
+    # If view is True, return HTML preview
+    if view:
+        issues_html = ""
+        for issue in job.get('issues', []):
+            severity = str(issue.get('severity', 'MEDIUM')).upper()
+            severity_class = f"severity-{severity.lower()}"
+            
+            issues_html += f"""
+            <div class="issue-item">
+                <div class="issue-header">
+                    <span class="issue-badge {severity_class}">{severity}</span>
+                    <span class="issue-type">{issue.get('type', 'General').title()}</span>
+                    <span class="issue-file">{issue.get('file', 'N/A')}:{issue.get('line', 'N/A')}</span>
+                </div>
+                <div class="issue-description">{issue.get('issue', 'No description')}</div>
+                {f'<pre class="code-snippet"><code>{issue.get("code_snippet")}</code></pre>' if issue.get('code_snippet') else ''}
+                {f'<div class="fix-suggestion"><strong>Suggestion:</strong> {issue.get("minimal_fix", {}).get("suggestion")}</div>' if issue.get('minimal_fix', {}).get('suggestion') else ''}
+                {f'<pre class="fix-code"><code>{issue.get("minimal_fix", {}).get("minimal_code")}</code></pre>' if issue.get('minimal_fix', {}).get('minimal_code') else ''}
+            </div>
+            """
+
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Scan Report - {job.get('repo_url', 'N/A')}</title>
+            <style>
+                body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #0d1117; color: #c9d1d9; line-height: 1.6; padding: 40px; }}
+                .container {{ max-width: 900px; margin: 0 auto; }}
+                h1 {{ color: #58a6ff; text-align: center; border-bottom: 2px solid #30363d; padding-bottom: 20px; }}
+                .summary-table {{ width: 100%; border-collapse: collapse; margin-top: 30px; background: #161b22; border-radius: 8px; overflow: hidden; }}
+                .summary-table td, .summary-table th {{ padding: 12px 15px; border: 1px solid #30363d; }}
+                .summary-table th {{ background: #21262d; text-align: left; }}
+                .issue-item {{ background: #161b22; border: 1px solid #30363d; border-radius: 8px; margin-top: 20px; padding: 20px; }}
+                .issue-header {{ display: flex; align-items: center; gap: 15px; margin-bottom: 10px; flex-wrap: wrap; }}
+                .issue-badge {{ padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: bold; text-transform: uppercase; }}
+                .severity-critical, .severity-high {{ background: #f85149; color: white; }}
+                .severity-medium {{ background: #d29922; color: white; }}
+                .severity-low {{ background: #3fb950; color: white; }}
+                .issue-type {{ font-weight: bold; color: #58a6ff; }}
+                .issue-file {{ color: #8b949e; font-size: 14px; }}
+                .issue-description {{ margin-bottom: 15px; font-size: 16px; }}
+                .code-snippet, .fix-code {{ background: #0d1117; padding: 15px; border-radius: 6px; border: 1px solid #30363d; overflow-x: auto; margin: 10px 0; }}
+                code {{ font-family: 'Consolas', 'Monaco', 'Courier New', monospace; font-size: 14px; color: #e6edf3; }}
+                .fix-suggestion {{ margin-top: 15px; color: #3fb950; border-left: 4px solid #3fb950; padding-left: 10px; }}
+                .fix-code code {{ color: #7ee787; }}
+                .footer {{ text-align: center; margin-top: 50px; color: #8b949e; font-size: 12px; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>Code Scanner Agent Report</h1>
+                
+                <table class="summary-table">
+                    <tr><th>Repository</th><td>{job.get('repo_url', 'N/A')}</td></tr>
+                    <tr><th>Scan ID</th><td>{job_id}</td></tr>
+                    <tr><th>Date</th><td>{job.get('completed_at', 'N/A')}</td></tr>
+                    <tr><th>Total Issues</th><td>{job.get('total_issues', 0)}</td></tr>
+                    <tr><th>Security Issues</th><td>{job.get('security_issues', 0)}</td></tr>
+                    <tr><th>Quality Issues</th><td>{job.get('quality_issues', 0)}</td></tr>
+                </table>
+
+                <h2 style="margin-top: 40px; color: #58a6ff;">Detailed Issues</h2>
+                {issues_html if issues_html else '<p>No issues found.</p>'}
+
+                <div class="footer">
+                    Generated by Code Scanner Agent &copy; {datetime.now().year}
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        return Response(content=html_content, media_type='text/html')
+
+    # Create Word Document (For download=True/view=False)
+    doc = Document()
+    
+    # Title
+    title = doc.add_heading('Code Scanner Agent - Scan Report', 0)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    # Summary Table
+    doc.add_heading('Summary', level=1)
+    table = doc.add_table(rows=1, cols=2)
+    table.style = 'Table Grid'
+    hdr_cells = table.rows[0].cells
+    hdr_cells[0].text = 'Metric'
+    hdr_cells[1].text = 'Value'
+    
+    summary_data = [
+        ('Repository', job.get('repo_url', 'N/A')),
+        ('Scan ID', job_id),
+        ('Date', job.get('completed_at', 'N/A')),
+        ('Total Issues', str(job.get('total_issues', 0))),
+        ('Security Issues', str(job.get('security_issues', 0))),
+        ('Quality Issues', str(job.get('quality_issues', 0))),
+        ('Files Scanned', str(job.get('files_scanned', 0))),
+        ('Duration', job.get('scan_duration', 'N/A'))
+    ]
+    
+    for metric, value in summary_data:
+        row_cells = table.add_row().cells
+        row_cells[0].text = metric
+        row_cells[1].text = value
+        
+    # Detailed Issues
+    if job.get('issues'):
+        doc.add_heading('Detailed Issues', level=1)
+        
+        for i, issue in enumerate(job.get('issues', []), 1):
+            if not issue.get('issue'): continue
+            
+            p = doc.add_paragraph(style='List Bullet')
+            # Severity color coding
+            severity = str(issue.get('severity', 'MEDIUM')).upper()
+            run = p.add_run(f"[{severity}] ")
+            run.bold = True
+            if severity == 'HIGH' or severity == 'CRITICAL':
+                run.font.color.rgb = RGBColor(255, 0, 0)
+            elif severity == 'MEDIUM':
+                run.font.color.rgb = RGBColor(255, 165, 0)
+            
+            p.add_run(f"{issue.get('type', 'General').title()}: ").bold = True
+            p.add_run(issue.get('issue'))
+            
+            # File info
+            doc.add_paragraph(f"File: {issue.get('file', 'N/A')} (Line: {issue.get('line', 'N/A')})", style='Body Text')
+            
+            # Code snippet
+            if issue.get('code_snippet'):
+                p_code = doc.add_paragraph()
+                p_code.paragraph_format.left_indent = Inches(0.5)
+                run_code = p_code.add_run(issue.get('code_snippet'))
+                run_code.font.name = 'Courier New'
+                run_code.font.size = Pt(9)
+            
+            # Minimal fix
+            if issue.get('minimal_fix'):
+                fix = issue.get('minimal_fix')
+                doc.add_paragraph(f"Suggestion: {fix.get('suggestion', 'N/A')}", style='Body Text')
+                if fix.get('minimal_code'):
+                    p_fix = doc.add_paragraph()
+                    p_fix.paragraph_format.left_indent = Inches(0.5)
+                    run_fix = p_fix.add_run(fix.get('minimal_code'))
+                    run_fix.font.name = 'Courier New'
+                    run_fix.font.size = Pt(9)
+                    run_fix.font.color.rgb = RGBColor(0, 128, 0)
+                    
+            doc.add_paragraph() # Spacer
+            
+    # Save to buffer
+    target_stream = BytesIO()
+    doc.save(target_stream)
+    target_stream.seek(0)
+    
+    filename = f"report_{job_id[:8]}.docx"
+    disposition = "inline" if view else f"attachment; filename={filename}"
+    return Response(
+        content=target_stream.getvalue(),
+        media_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        headers={"Content-Disposition": disposition}
+    )
 
 
 
@@ -876,6 +1308,11 @@ def serve_css():
 def serve_js():
     """Serve JavaScript file"""
     return FileResponse(os.path.join(frontend_dir, 'script.js'))
+
+@app.get("/api.js")
+def serve_api_js():
+    """Serve API JavaScript file"""
+    return FileResponse(os.path.join(frontend_dir, 'api.js'))
 
 @app.get("/favicon.ico")
 def serve_favicon():

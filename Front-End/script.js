@@ -1,18 +1,19 @@
 class CodeScannerApp {
     constructor() {
-        this.baseUrl = '/api';
+        this.api = new ApiService();
         this.currentJobId = null;
         this.statusInterval = null;
         this.deleteMode = false;
         this.currentTheme = 'dark'; // Default theme
+        this.currentUser = null;
         this.init();
     }
 
-    init() {
+    async init() {
         this.initTheme();
         this.bindEvents();
         this.initNavigation();
-        this.loadAllScans();
+        await this.checkAuth();
     }
 
     initTheme() {
@@ -134,8 +135,8 @@ class CodeScannerApp {
                 <div class="settings-content">
                     <p><strong>Application Version:</strong> 1.0.0</p>
                     <p><strong>API Status:</strong> <span style="color: green;">Connected</span></p>
-                    <p><strong>Database:</strong> SQLite (Local)</p>
-                    <p><strong>Scan Engine:</strong> Bandit + Pylint</p>
+                    <p><strong>Database:</strong> PostgreSQL</p>
+                    <p><strong>Scan Engine:</strong> Bandit + Pylint + Semgrep + AI Analysis</p>
                     <br>
                     <button onclick="window.app.clearAllData()" class="btn-delete">Clear All Data</button>
                 </div>
@@ -155,11 +156,122 @@ class CodeScannerApp {
         if (!confirmed) return;
 
         try {
-            // This would need a backend endpoint to clear all data
+            this.showLoading('Clearing all scan data...');
+            const result = await this.api.clearAllScans();
+
             this.showSuccess('All data cleared successfully!');
             this.loadAllScans();
+
+            // If we are viewing results or status, hide them
+            document.getElementById('resultsSection').style.display = 'none';
+            document.getElementById('statusSection').style.display = 'none';
+            this.currentJobId = null;
+
         } catch (error) {
-            this.showError('Failed to clear data');
+            console.error('Clear data error:', error);
+            this.showError(`Failed to clear data: ${error.message}`);
+        }
+    }
+
+    async checkAuth() {
+        if (this.api.isLoggedIn()) {
+            try {
+                this.currentUser = await this.api.getMe();
+                this.updateAuthUI(true);
+                this.loadAllScans();
+            } catch (error) {
+                console.error('Auth verification failed:', error);
+                this.api.logout();
+                this.updateAuthUI(false);
+            }
+        } else {
+            this.updateAuthUI(false);
+        }
+    }
+
+    updateAuthUI(isLoggedIn) {
+        const userProfile = document.getElementById('userProfile');
+        const authActions = document.getElementById('authActions');
+        const userName = document.getElementById('userName');
+        const startScanBtn = document.getElementById('startScanBtn');
+        const historySection = document.querySelector('.scans-section');
+        const scansList = document.getElementById('scansList');
+
+        if (isLoggedIn) {
+            userProfile.style.display = 'flex';
+            authActions.style.display = 'none';
+            userName.textContent = this.currentUser.full_name || this.currentUser.email;
+            startScanBtn.disabled = false;
+            startScanBtn.textContent = 'Start Scan';
+        } else {
+            userProfile.style.display = 'none';
+            authActions.style.display = 'flex';
+            // Enable scan button for guests too
+            startScanBtn.disabled = false;
+            startScanBtn.textContent = 'Start Scan (Guest Mode)';
+            scansList.innerHTML = '<p class="info-msg">Guest scans are not saved to history. Login to save results.</p>';
+        }
+    }
+
+    showAuthModal(mode = 'login') {
+        const modal = document.getElementById('authModal');
+        const title = document.getElementById('authModalTitle');
+        const submitBtn = document.getElementById('authSubmitBtn');
+        const fullNameGroup = document.getElementById('fullNameGroup');
+        const switchText = document.getElementById('authSwitchText');
+
+        modal.style.display = 'flex';
+
+        if (mode === 'login') {
+            title.textContent = 'Login';
+            submitBtn.textContent = 'Login';
+            fullNameGroup.style.display = 'none';
+            switchText.innerHTML = `Don't have an account? <a href="#" id="authSwitchBtn">Register</a>`;
+        } else {
+            title.textContent = 'Register';
+            submitBtn.textContent = 'Create Account';
+            fullNameGroup.style.display = 'block';
+            switchText.innerHTML = `Already have an account? <a href="#" id="authSwitchBtn">Login</a>`;
+        }
+
+        // Re-bind switch button
+        document.getElementById('authSwitchBtn').onclick = (e) => {
+            e.preventDefault();
+            this.showAuthModal(mode === 'login' ? 'register' : 'login');
+        };
+    }
+
+    hideAuthModal() {
+        document.getElementById('authModal').style.display = 'none';
+        document.getElementById('authForm').reset();
+    }
+
+    async handleAuthSubmit(e) {
+        e.preventDefault();
+        const form = e.target;
+        const email = form.email.value.trim();
+        const password = form.password.value;
+        const fullName = form.full_name ? form.full_name.value.trim() : '';
+        const isLogin = document.getElementById('authModalTitle').textContent === 'Login';
+
+        try {
+            this.showLoading(isLogin ? 'Logging in...' : 'Creating account...');
+
+            if (isLogin) {
+                await this.api.login(email, password);
+            } else {
+                await this.api.register(email, password, fullName);
+                // Auto login after registration
+                await this.api.login(email, password);
+            }
+
+            await this.checkAuth();
+            this.hideAuthModal();
+            this.showSuccess(isLogin ? 'Welcome back!' : 'Account created successfully!');
+
+        } catch (error) {
+            console.error('Auth error:', error);
+            this.showError(error.message);
         }
     }
 
@@ -168,6 +280,31 @@ class CodeScannerApp {
         document.getElementById('themeToggle').addEventListener('click', () => {
             this.toggleTheme();
         });
+
+        // Auth Buttons
+        document.getElementById('loginOpenBtn').onclick = () => this.showAuthModal('login');
+        document.getElementById('registerOpenBtn').onclick = () => this.showAuthModal('register');
+        document.getElementById('closeAuthModal').onclick = () => this.hideAuthModal();
+        document.getElementById('logoutBtn').onclick = () => {
+            this.api.logout();
+            this.currentUser = null;
+            this.updateAuthUI(false);
+            this.showSuccess('Logged out successfully');
+        };
+
+        // Sign in another account
+        const signinAnotherBtn = document.getElementById('signinAnotherBtn');
+        if (signinAnotherBtn) {
+            signinAnotherBtn.onclick = () => {
+                this.api.logout();
+                this.currentUser = null;
+                this.updateAuthUI(false);
+                this.showAuthModal('login');
+            };
+        }
+
+        // Auth Form
+        document.getElementById('authForm').addEventListener('submit', (e) => this.handleAuthSubmit(e));
 
         document.getElementById('scanForm').addEventListener('submit', (e) => this.handleScanSubmit(e));
 
@@ -248,6 +385,20 @@ class CodeScannerApp {
             }
         });
 
+        document.getElementById('downloadDocxModalBtn').addEventListener('click', () => {
+            this.hideReportModal();
+            if (this.currentJobId) {
+                this.directDownload('docx');
+            }
+        });
+
+        document.getElementById('viewDocxModalBtn').addEventListener('click', () => {
+            this.hideReportModal();
+            if (this.currentJobId) {
+                this.viewReport('docx');
+            }
+        });
+
         // Close modal when clicking outside
         document.getElementById('reportModal').addEventListener('click', (e) => {
             if (e.target.id === 'reportModal') {
@@ -308,44 +459,22 @@ class CodeScannerApp {
             formData.append('prd_document', prdFile);
         }
 
-        const deepScan = document.getElementById('deepScan').checked;
-        formData.append('deep_scan', deepScan);
+
+
+        const result = await this.api.startScan(formData);
+        console.log('Scan started successfully:', result);
+        this.currentJobId = result.job_id;
+
+        this.showSuccess(`Scan started successfully! Job ID: ${result.job_id}`);
+        this.showStatusSection();
+        this.startStatusPolling();
         try {
             this.showLoading('Starting scan...');
             console.log('Submitting scan request:', {
                 repo_url: repoUrl,
                 has_unit_test: !!unitTestFile,
-                has_prd: !!prdFile,
-                deep_scan: deepScan
+                has_prd: !!prdFile
             });
-
-            const response = await fetch(`${this.baseUrl}/scan`, {
-                method: 'POST',
-                body: formData
-            });
-
-            if (!response.ok) {
-                let errorMessage = `HTTP error! status: ${response.status}`;
-
-                try {
-                    const errorData = await response.json();
-                    errorMessage = errorData.detail || errorMessage;
-                } catch {
-                    const errorText = await response.text();
-                    console.error('Error response:', errorText);
-                }
-
-                throw new Error(errorMessage);
-            }
-
-            const result = await response.json();
-            console.log('Scan started successfully:', result);
-            this.currentJobId = result.job_id;
-
-            this.showSuccess(`Scan started successfully! Job ID: ${result.job_id}`);
-            this.showStatusSection();
-            this.startStatusPolling();
-
             // Reset form
             document.getElementById('scanForm').reset();
 
@@ -379,12 +508,7 @@ class CodeScannerApp {
         if (!this.currentJobId) return;
 
         try {
-            const response = await fetch(`${this.baseUrl}/scan/${this.currentJobId}`);
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-
-            const status = await response.json();
+            const status = await this.api.getScanStatus(this.currentJobId);
             this.updateStatusDisplay(status);
 
             if (status.status === 'completed') {
@@ -446,12 +570,7 @@ class CodeScannerApp {
 
         try {
             console.log(`Loading report for job: ${this.currentJobId}`);
-            const response = await fetch(`${this.baseUrl}/scan/${this.currentJobId}/report`);
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-
-            const report = await response.json();
+            const report = await this.api.getScanReport(this.currentJobId);
             console.log('Report loaded:', report);
             this.displayScanResults(report);
             this.loadAllScans(); // Refresh the scans list
@@ -716,12 +835,7 @@ class CodeScannerApp {
     async loadAllScans() {
         try {
             console.log('Loading all scans...');
-            const response = await fetch(`${this.baseUrl}/scans`);
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-
-            const data = await response.json();
+            const data = await this.api.listScans();
             console.log('Scans loaded:', data.scans);
             this.displayAllScans(data.scans);
 
@@ -788,12 +902,7 @@ class CodeScannerApp {
         this.showStatusSection();
 
         try {
-            const response = await fetch(`${this.baseUrl}/scan/${jobId}`);
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-
-            const status = await response.json();
+            const status = await this.api.getScanStatus(jobId);
             this.updateStatusDisplay(status);
 
             if (status.status === 'running') {
@@ -826,14 +935,7 @@ class CodeScannerApp {
 
         try {
             this.showLoading('Loading scan report...');
-            const response = await fetch(`${this.baseUrl}/scan/${this.currentJobId}/report`);
-
-            if (!response.ok) {
-                const errorText = await response.text();
-                throw new Error(`HTTP ${response.status}: ${errorText}`);
-            }
-
-            const report = await response.json();
+            const report = await this.api.getScanReport(this.currentJobId);
             console.log('Report data:', report);
             this.displayScanResults(report);
 
@@ -863,7 +965,7 @@ class CodeScannerApp {
 
         try {
             // Create direct download link
-            const downloadUrl = `${this.baseUrl}/download/${this.currentJobId}/${format}`;
+            const downloadUrl = this.api.getDownloadUrl(this.currentJobId, format);
 
             // Create hidden link and click it
             const link = document.createElement('a');
@@ -873,6 +975,7 @@ class CodeScannerApp {
             if (format === 'pdf') extension = 'pdf';
             else if (format === 'json') extension = 'json';
             else if (format === 'txt') extension = 'txt';
+            else if (format === 'docx') extension = 'docx';
 
             link.download = `report_${this.currentJobId.substring(0, 8)}.${extension}`;
             link.style.display = 'none';
@@ -896,7 +999,7 @@ class CodeScannerApp {
             return;
         }
 
-        const viewUrl = `${this.baseUrl}/download/${this.currentJobId}/${format}?view=true`;
+        const viewUrl = this.api.getDownloadUrl(this.currentJobId, format, true);
         console.log(`Opening view URL: ${viewUrl}`);
         window.open(viewUrl, '_blank');
     }
@@ -914,13 +1017,7 @@ class CodeScannerApp {
 
         try {
             this.showLoading('Deleting scan...');
-            const response = await fetch(`${this.baseUrl}/scan/${jobId}`, {
-                method: 'DELETE'
-            });
-
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
+            await this.api.deleteScan(jobId);
 
             this.showSuccess('Scan deleted successfully!');
             this.loadAllScans(); // Refresh the list
@@ -1002,9 +1099,7 @@ class CodeScannerApp {
             this.showLoading(`Deleting ${selectedJobIds.length} scans...`);
 
             // Delete scans in parallel
-            const deletePromises = selectedJobIds.map(jobId =>
-                fetch(`${this.baseUrl}/scan/${jobId}`, { method: 'DELETE' })
-            );
+            const deletePromises = selectedJobIds.map(jobId => this.api.deleteScan(jobId));
 
             const results = await Promise.allSettled(deletePromises);
 
