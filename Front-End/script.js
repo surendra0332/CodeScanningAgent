@@ -306,6 +306,26 @@ class CodeScannerApp {
         // Auth Form
         document.getElementById('authForm').addEventListener('submit', (e) => this.handleAuthSubmit(e));
 
+        // Password Visibility Toggle
+        const passwordToggle = document.getElementById('passwordToggle');
+        const passwordInput = document.getElementById('authPassword');
+        if (passwordToggle && passwordInput) {
+            passwordToggle.addEventListener('click', () => {
+                const eyeOpen = passwordToggle.querySelector('.eye-open');
+                const eyeClosed = passwordToggle.querySelector('.eye-closed');
+
+                if (passwordInput.type === 'password') {
+                    passwordInput.type = 'text';
+                    eyeOpen.style.display = 'none';
+                    eyeClosed.style.display = 'block';
+                } else {
+                    passwordInput.type = 'password';
+                    eyeOpen.style.display = 'block';
+                    eyeClosed.style.display = 'none';
+                }
+            });
+        }
+
         document.getElementById('scanForm').addEventListener('submit', (e) => this.handleScanSubmit(e));
 
         const unitTestReportInput = document.getElementById('unitTestReport');

@@ -413,6 +413,39 @@ section h2 {
     text-decoration: underline;
 }
 
+/* Password Input with Toggle */
+.password-input-wrapper {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.password-input-wrapper input {
+    padding-right: 45px;
+    /* Space for the eye button */
+}
+
+.password-toggle {
+    position: absolute;
+    right: 10px;
+    background: transparent;
+    border: none;
+    padding: 5px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-secondary);
+    transition: color 0.2s ease;
+}
+
+.password-toggle:hover {
+    color: #667eea;
+    transform: none;
+    box-shadow: none;
+    background: transparent;
+}
+
 /* Button Styles */
 button {
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
