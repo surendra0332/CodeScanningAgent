@@ -419,18 +419,12 @@ def run_scan(job_id, repo_url, deep_scan=False):
 @app.post("/api/auth/register", response_model=UserResponse)
 def register(user: UserCreate):
     """Register a new user"""
-    print(f"📝 Starting registration for: {user.email}") # DEBUG
-    
     try:
         db_user = db.get_user_by_email(user.email)
         if db_user:
-            print(f"❌ Email already exists: {user.email}") # DEBUG
             raise HTTPException(status_code=400, detail="Email already registered")
         
-        print("🔐 Hashing password...") # DEBUG
         hashed_password = get_password_hash(user.password)
-        
-        print("💾 Creating user in DB...") # DEBUG
         user_id = db.create_user({
             "email": user.email,
             "hashed_password": hashed_password,
@@ -438,16 +432,13 @@ def register(user: UserCreate):
         })
         
         if not user_id:
-            print("❌ db.create_user returned None!") # DEBUG
-            raise HTTPException(status_code=500, detail="Database insertion failed")
+            raise HTTPException(status_code=500, detail="Failed to create user")
             
-        print(f"✅ User created successfully with ID: {user_id}") # DEBUG
         return db.get_user_by_id(user_id)
         
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"🔥 CRITICAL REGISTER ERROR: {str(e)}") # DEBUG
-        import traceback
-        traceback.print_exc() # Print full stack trace
         raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")
 
 @app.post("/api/auth/login", response_model=Token)
