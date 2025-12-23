@@ -7,12 +7,30 @@ from typing import List, Dict, Optional
 
 class ScanDatabase:
     def __init__(self, db_url: str = None):
-        # Env variable OR Default Local Postgres URL
-        self.db_url = db_url or os.getenv("DATABASE_URL") or "postgresql://surendrawork@localhost:5432/code_scanner"
+        # 1. Check if we are in Production
+        self.is_production = os.getenv("ENVIRONMENT", "development").lower() == "production"
         
+        # 2. Try to get Database URL
+        self.db_url = db_url or os.getenv("DATABASE_URL")
+        
+        # 3. Handle Missing URL
         if not self.db_url:
-            print("WARNING: DATABASE_URL not found. PostgreSQL connection will fail.")
-        self.init_database()
+            if self.is_production:
+                print("❌ FATAL: DATABASE_URL is missing in PRODUCTION environment!")
+                print("➡️ Please add 'DATABASE_URL' in Render Dashboard -> Environment Variables.")
+                self.db_url = None # Explicitly set to None to fail connection later
+            else:
+                # Fallback only for Local Dev
+                print("⚠️  DATABASE_URL not found. Using Localhost fallback...")
+                self.db_url = "postgresql://surendrawork@localhost:5432/code_scanner"
+        
+        # 4. Log usage (Masked)
+        if self.db_url:
+            masked_url = self.db_url.split("@")[-1] if "@" in self.db_url else "********"
+            print(f"🔌 Connecting to Database: ...@{masked_url}")
+
+        if self.db_url:
+            self.init_database()
     
     def get_connection(self):
         """Standard connection for PostgreSQL"""
